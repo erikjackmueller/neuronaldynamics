@@ -1,0 +1,6 @@
+[project]
+name = "neuronaldynamics"
+version = "2026.0.0"
+
+[tool.setuptools.packages.find]
+where = ["src"]
