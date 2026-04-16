@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from neuronaldynamics.Model.DI_wave import DI_wave_simulation
-from Model.Nykamp_Model import Nykamp_Model_1
-from Utils import get_peak_values
+from neuronaldynamics.Model.Nykamp_Model import Nykamp_Model_1
+from neuronaldynamics.Utils import get_peak_values
 matplotlib.use('TkAgg')
 
 # plt.rcParams["font.family"] = "serif"

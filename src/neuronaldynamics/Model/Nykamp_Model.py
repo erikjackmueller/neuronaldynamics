@@ -10,7 +10,7 @@ import os
 import h5py
 import matplotlib
 import matplotlib.animation as animation
-from Utils import harm_mean
+from neuronaldynamics.Utils import harm_mean
 matplotlib.use('TkAgg')
 
 class Nykamp_Model():

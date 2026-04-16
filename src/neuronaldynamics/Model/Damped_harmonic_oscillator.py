@@ -1,4 +1,5 @@
 from neuronaldynamics.Model.Models import General2DSystem
+
 class Damped_harmonic_oscillator(General2DSystem):
     """
     Class that defines a damped harmonic oscillator as General2DSystem

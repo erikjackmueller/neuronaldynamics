@@ -14,7 +14,7 @@ from scipy.special import factorial
 from scipy.stats import gamma
 import random
 from tqdm import tqdm
-from Utils import *
+from neuronaldynamics.Utils import *
 from scipy.ndimage import gaussian_filter1d
 import time
 import os

@@ -3,7 +3,7 @@ import numpy as np
 import sympy as sy
 import os
 from scipy.integrate import odeint
-from Utils import get_stability_2D, nrmse, t_format
+from neuronaldynamics.Utils import get_stability_2D, nrmse, t_format
 import matplotlib.pyplot as plt
 import matplotlib.ticker as tck
 import time

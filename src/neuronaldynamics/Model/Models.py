@@ -1,9 +1,9 @@
-from Solvers.Solvers import Euler
+from neuronaldynamics.Solvers.Solvers import Euler
 import warnings
 import numpy as np
 import sympy as sy
 from scipy.integrate import odeint
-from Utils import get_stability_2D, nrmse
+from neuronaldynamics.Utils import get_stability_2D, nrmse
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('TkAgg')
