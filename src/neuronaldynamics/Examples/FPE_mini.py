@@ -9,8 +9,6 @@ First order in dt and dv; FPE_Population is the current and more complex solver.
    FPE_Population.save_sim_results for that
 2. optional (COMPARE_LIF): a LIF network with the same neurons, input and noise (LIF_basic.run_low_mem), and the
    comparison of both firing rates with Utils.compare_firing_rate, as in Examples/noise_LIF_network_2026.py
-
-Usage (from src/neuronaldynamics):  python Examples/solver_tests/FPE_mini.py
 """
 import sys
 from pathlib import Path
