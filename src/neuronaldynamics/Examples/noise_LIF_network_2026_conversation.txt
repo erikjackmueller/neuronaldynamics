@@ -1,0 +1,118 @@
+Conversation log: LIF network vs. NNLIF mean field (Hu et al. 2021 solver) - scaling factors
+Date: 2026-10-14
+Files concerned:
+  Examples/noise_LIF_network_2026.py
+  Model/LIF.py            (LIF_basic)
+  Model/Nykamp_Model.py   (Nykamp_Model_1, hu-2021 branch; FPE_Population)
+Check scripts (temporary scratchpad, may be cleaned up):
+  C:\Users\User\AppData\Local\Temp\claude\C--Users-User\a68d05d8-7522-4170-b092-b4f3040dcf36\scratchpad\
+  check_scaling.py, conv.py, weak.py, final.py, dt_dv_study.py, dt_dv_study_results.txt, dt_dv_study.png
+  (run with C:\Users\User\miniconda3\python.exe - the project .venv has no numpy)
+
+====================================================================================================
+Q1: I need a factor of 20 between noise_sigma (LIF) and voltage_sigma (NNLIF), and a factor of 100
+    between the external currents. Is there a code difference that means different biophysics?
+====================================================================================================
+
+Both factors come from the code, not from different biophysics. Two separate causes plus one real
+parameter mismatch.
+
+1. Factor 100 on the current: missing 1/dv in the Hu solver
+   Nykamp_Model.py:1977   c = diffusion_coeff * self.dt / dv_
+   Hu et al.: (p_i^{n+1} - p_i^n)/dt = (1/dv^2)[a M_{i+1/2}(p_{i+1}/M_{i+1} - p_i/M_i) - ...]
+   -> should be dt / dv_**2.
+   c multiplies the whole flux, so with dv = 0.01 the FPE effectively ran with
+     - drift  0.01 * (-(v - E) + v_ext)/tau : the x100 on the current undoes this for the input,
+       but the leak stays 100x too weak (effective tau = 1200 ms instead of 12 ms)
+     - diffusion 0.01 * sigma^2/tau : noise 100x too small in variance (10x in sigma)
+   The factor 100 is exactly 1/dv and changes with dv.
+   Everything else is consistent: SG_Flux gives d/dv ln M = h/(alpha*tau), i.e. drift h/tau with
+   h = -(v - E_rest) + v_ext; g_leak = c_mem/tau = 9.1667e-9 S equals g_r in the LIF, so the
+   current->voltage conversion is identical in both models.
+
+2. Factor 20 on sigma: LIF noise not scaled with sqrt(dt) (plus factor 10 from point 1)
+   LIF.py:374 and :429 - N(0, noise_sigma) is added to Vinj and multiplied by dt/tau.
+   Per-step variance sigma_n^2 dt^2/tau^2 -> effective stationary voltage std
+       sigma_V = sigma_n * sqrt(dt/(2 tau)) = 700 * sqrt(0.001/24) = 4.52 mV
+   (FPE convention D = sigma^2/tau -> sigma is the free-membrane std.)
+   With the dv bug the solver needs 4.52 * sqrt(1/dv) = 45; 35 was found by fitting.
+   noise_sigma in LIF_basic depends on dt. Standard Euler-Maruyama form:
+       v += (-(v - E_rest) + v_ext) * dt/tau + sigma_V * np.sqrt(2*dt/tau) * np.random.randn(n)
+
+3. Real biophysical mismatch: resting potential
+   LIF_basic keeps its default E_rest = -65 (LIF.py:352); the script only overrides V_reset = -70.
+   Nykamp_Model_1 uses u_rest = u_reset = -70. Add 'E_rest': -70 to neuron_parameters.
+   Initial distributions also differ slightly (LIF ~-65, FPE ~-66) - transient only.
+
+Numerical check (stationary rates over 100 ms):
+   input    LIF_basic (E=-70, noise 700)   Hu dt/dv^2, x1 current, sigma 4.52   current code (x100, sigma 35)
+   0.15 nA  51.6 Hz                        51.5 Hz                              89.8 Hz
+   1 nA     563.5 Hz                       548.6 Hz                             575.6 Hz
+   At 1 nA the drive is so strong that noise and leak hardly matter, which is why the wrong factors
+   still looked like a good fit.
+
+Minor: Nykamp_Model.py:2042, second rate term uses +(v_thr - u_rest) instead of -, and has no /tau.
+It multiplies rho[thr_idx], which is always 0 (absorbing boundary), so it contributes nothing.
+
+Fixes: c = diffusion_coeff * self.dt / dv_**2; input_current_A = step(t_NMM) (no x100);
+voltage_sigma ~ 4.52; 'E_rest': -70 in neuron_parameters; ideally sqrt(dt) LIF noise.
+
+====================================================================================================
+Q2: Impact of dt and dv on both models
+====================================================================================================
+
+Weak drive, 0.15 nA:
+   LIF_basic, noise_sigma=700        dt 0.02 -> 0.00025 ms    113 -> 41 Hz
+   LIF Euler-Maruyama, sigma_V=4.52  dt 0.02 -> 0.00025 ms    50.1 -> 51.5 Hz
+   Corrected solver                  dt 0.05 -> 0.001 ms      51.4 -> 51.6 Hz
+   Corrected solver                  dv 0.05 -> 0.0025 mV     51.5 -> 51.6 Hz
+   Original solver, x100, sigma 35   dv 0.05 -> 0.0025 mV     436 -> 22.6 Hz
+Strong drive, 1 nA:
+   LIF Euler-Maruyama                dt 0.02 -> 0.00025 ms    557 -> 564 Hz
+   Corrected solver                  dt 0.05 -> 0.001 ms      537 -> 551 Hz (dv=0.01)
+   Corrected solver                  dv 0.05 -> 0.0025 mV     501 -> 558 Hz (dt=0.01)
+   Original solver                   dv 0.05 -> 0.0025 mV     2374 -> 149 Hz
+
+- LIF_basic noise depends on dt (effective noise noise_sigma*sqrt(dt/2tau)); matches only near
+  dt = 0.001. Euler-Maruyama is flat in dt.
+- The original solver depends strongly on dv (rate ~ proportional to 1/dv at weak drive:
+  89.9 -> 45.1 -> 22.6 Hz for dv 0.01 -> 0.005 -> 0.0025). Fitted factors only hold for dv = 0.01.
+- Corrected solver converges to the LIF (51.5-51.6 Hz for all dt, dv at weak drive).
+- Correction to Q1: the ~3% residual at strong drive comes mostly from dv, not dt (dt 0.01 -> 0.001
+  adds ~3 Hz; dv = 0.0025 gives 558 vs LIF 564). Large drift vs. small diffusion makes a sharp edge
+  near threshold. Use dv <= 0.005 for strong inputs.
+
+====================================================================================================
+Q3: With c = diff_coeff*dt/dv**2 the rate output is 100x too small. What did I miss?
+====================================================================================================
+
+The firing-rate readout needs the same 1/dv fix. Nykamp_Model.py:2041:
+    r[j, i] = ((diffusion_coeff / dv_) * (rho[j, -2, i-1]) + ...
+rho is probability mass per grid cell (sums to 1), so p = rho/dv and the threshold flux is
+D*p[-2]/dv = D*rho[-2]/dv^2:
+    r[j, i] = ((diffusion_coeff / dv_**2) * (rho[j, -2, i-1]) + ...
+Previously the effective D was D*dv, so D/dv was accidentally right for the slowed scheme.
+rho itself evolved correctly: J_out reinjection is scaled to (1 - rho.sum()), not to r.
+
+Same bug in FPE_Population (top of Nykamp_Model.py): c at lines 211 and 385, rate at 259 and 449.
+
+====================================================================================================
+Q4: But rho should be the same as p in the paper.
+====================================================================================================
+
+In the paper p is a density (integral p dv = 1). The code normalizes rho so that its plain sum is 1:
+  - Nykamp_Model.py:1675, :1682  init_dist /= init_dist.sum()      -> sum(rho) = 1
+  - Nykamp_Model.py:2048         J_out *= (1 - rho[j,:, i].sum())  -> refills plain sum to 1 each step
+A density would sum to 1/dv = 100. The plot's z_limit=0.003 also fits mass per cell (sigma=1 mV
+Gaussian peaks at 0.4/mV * 0.01 mV = 0.004; as a density it would be ~0.4).
+So p = rho/dv and N = -a dp/dv|_{V_F} ~ a*p[-2]/dv = a*rho[-2]/dv^2.
+
+To make rho = p instead, change the normalization (pick ONE option, not both):
+                     keep rho as mass (current)        make rho = p (density)
+   init              /= init_dist.sum()                /= (init_dist.sum() * dv_)
+   reinjection       J_out *= (1 - rho.sum())          J_out *= (1 - rho.sum()*dv_) / dv_
+   rate              D / dv_**2 * rho[-2]              D / dv_ * rho[-2]
+   plot z_limit      ~0.003                            ~0.3
+Density version: J_out is normalized to sum 1 first, so /dv_ makes it a density bump; anything else
+that sums rho (mean_rho_area checks, rho_delta in the Nykamp branch) needs a *dv too. The linear
+solve step does not depend on the convention.

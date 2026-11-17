@@ -49,7 +49,7 @@ save_file_path = os.path.join(path_root, '\\Nextcloud\\TMS Neuro Projects\\M1_mo
 
 # save_file_path = "C:\\Users\\User\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI-wave_model\\orientation_tuning"
 # save_file_path = "C:\\Users\\emueller\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI-wave_model\\orientation_tuning"
-simulation_name = 'diw_param_test'
+simulation_name = 'EI_syn_test'
 fname = os.path.join(save_file_path, simulation_name)
 
 # simulate

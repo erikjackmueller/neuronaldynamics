@@ -1,5 +1,5 @@
 """
-Code from Richard Naud:
+Some Code from Richard Naud:
 https://compneuro.neuromatch.io/tutorials/W2D3_BiologicalNeuronModels/student/W2D3_Tutorial1.html
 Modified by Erik Müller
 
@@ -290,11 +290,12 @@ class Neuron_population():
         fig = plt.figure(figsize=(10*size, 4.25*n_plots*size))
         for i_plot, plot_idx in enumerate(plot_idxs):
 
-            if self.n_populations > 1:
+            if self.n_populations > 1 and np.size(self.V_reset) > self.n_populations:
                 v_idxs = np.where(self.type_mask == i_plot)
                 V_reset = self.V_reset[v_idxs][0]
             else:
-                V_reset = self.V_reset
+                # scalar or one value per population (LIF_basic.run_low_mem)
+                V_reset = np.broadcast_to(self.V_reset, (self.n_populations,))[i_plot]
             n_neurons = v[i_plot].shape[0]
 
             plot_loc_1 = int(2 * i_plot + 1)
@@ -325,7 +326,7 @@ class Neuron_population():
             # ax.set_ylim([self.V_reset * 1.1, self.V_th*1.1])
 
             ax = fig.add_subplot(n_plots, 2, plot_loc_2)
-            ax.plot(t_plot, r_plot[i_plot]*(1/self.dt)*(1000/n_neurons))
+            ax.plot(t_plot, r_plot[i_plot]*(1/self.dt*1000/n_neurons))
             ax.set_title(f"Population activity ({str(p_types[plot_idx])})")
             ax.set_ylabel("Firing rate (Hz)")
             ax.set_xlabel("time (ms)")
@@ -333,6 +334,216 @@ class Neuron_population():
 
         plt.tight_layout()
         plt.show()
+
+class LIF_basic(Neuron_population):
+    def __init__(self, parameters):
+
+        super().__init__()
+        # set defaults
+        self.fname = 'basic_LIF'
+
+        # neuron parameters #
+        self.V_th = -55.  # spike threshold [mV]
+        self.V_reset = -65.  # reset potential [mV]
+        self.tau_m = 20.  # membrane time constant [ms]
+        self.g_r = 9.6e-9  # rest conductance [S]
+        self.V_init = -70.  # initial potential [mV]
+        self.E_rest = -70.  # resting potential [mV]
+        self.t_ref = 3.  # refractory time (ms)
+
+        # simulation parameters #
+        self.T = 400.  # Total duration of simulation [ms]
+        self.dt = .1  # Simulation time step [ms]
+        self.weights = None
+        self.delay_kernel = None  # only used by run_low_mem, None: alpha kernel as in FPE_Population
+        self.Iinj = None  # injected current in A
+        self.n_neurons = 1
+        self.population_type = ['exc']
+        self.spike_type = 0
+        self.init_pdf_sigma = 1
+        self.noise_sigma = 0
+        self.verbose = 0
+        self.simulation_done = False
+
+        # update self variables if they are in parameters
+        self.__dict__.update(parameters)
+
+        self.t = np.arange(0, self.T, self.dt)
+        self.time_steps = self.t.shape[0]
+        if isinstance(self.Iinj, np.ndarray):
+            # TODO: repeat for no input and scalar input if needed
+            voltage_noise = np.random.normal(0, 1, self.Iinj.shape)
+            ext_voltage = 1e3 * self.Iinj / self.g_r
+            self.Vinj = ext_voltage
+            self.noise = voltage_noise
+
+    def run(self):
+        """
+        Run function
+        """
+        self.v = np.zeros((self.n_neurons, self.time_steps))
+        self.t_spikes = np.zeros_like(self.v)
+
+        # randomization hard coded here
+        self.v[:, 0] = np.random.normal(self.V_init, self.init_pdf_sigma, self.v.shape[0])
+        self.v[self.v[:, 0] > self.V_th -0.1, 0] =  self.V_th - 0.1  # reset values above V_th back below it
+        t_ref_counter = np.zeros(self.n_neurons)  # the count for refractory duration
+        t_last_spike = np.zeros(self.n_neurons)
+        self.r = np.zeros_like(self.v)
+
+        # init spike recording
+        self.rec_spikes = []
+        self.delayed_spikes = []
+
+        for _ in range(self.n_neurons):
+            self.rec_spikes.append([])
+            self.delayed_spikes.append([])
+
+
+        for it in tqdm(range(self.time_steps - 1), f'simulating network for {self.time_steps - 1} time steps'):
+
+            for i in range(self.n_neurons):
+                # update refractory time after spikes
+                if self.n_populations > 1:
+                    V_th = self.V_th[i]
+                    V_reset = self.V_reset[i]
+                    t_ref = self.t_ref[i]
+                else:
+                    V_th = self.V_th
+                    V_reset = self.V_reset
+                    t_ref = self.t_ref
+
+                if t_ref_counter[i] > 0:  # check if in refractory period
+                    self.v[i, it] = V_reset  # set voltage to reset
+                    t_ref_counter[i] = t_ref_counter[i] - 1  # reduce running counter of refractory period
+
+                elif self.v[i, it] >= V_th:  # if voltage over threshold
+                    self.rec_spikes[i].append(it)  # record spike event at spike time idx
+                    self.t_spikes[i, it] = 1
+                    self.r[i, int(t_last_spike[i]):it] = 1000 / (
+                            it - t_last_spike[i]) * self.dt  # times 1000 for conversion 1/ms -> Hz
+                    t_last_spike[i] = it
+                    self.v[i, it] = V_reset  # reset voltage
+                    t_ref_counter[i] = t_ref / self.dt  # set refractory time
+
+            # Calculate the increment of the membrane potential
+            # input here needs to be in units of voltage
+            dv_determinsitic = (-(self.v[:, it] - self.E_rest) + self.Vinj[:, it]) * (self.dt / self.tau_m)
+            dv_noise = self.noise_sigma*np.sqrt(2 * self.dt / self.tau_m) * self.noise[:, it]
+            dv = dv_determinsitic + dv_noise
+
+            # Update the membrane potential
+            self.v[:, it + 1] = self.v[:, it] + dv
+
+        # after loop over all neurons gather results
+        self.v = np.array([self.v])
+        spike_sum = np.array([np.sum(self.t_spikes, axis=0)])
+        r = spike_sum / self.dt
+        for i in range(self.n_neurons):
+            # Get spike times in ms
+            self.rec_spikes[i] = np.array(self.rec_spikes[i]) * self.dt
+
+        with h5py.File(self.fname + '.hdf5', 'w') as h5file:
+            h5file.create_dataset('t', data=self.t)
+            h5file.create_dataset('v', data=self.v)
+            h5file.create_dataset('r', data=spike_sum)
+            h5file.create_dataset('p_types', data=self.population_type)
+            h5file.create_dataset('Iinj', data=self.Iinj)
+        self.simulation_done = True
+
+    def run_low_mem(self, n_rec=1000, rec_every=10, seed=None, save=True):
+        """
+        Vectorised run function with low memory usage, same update rule as run(). Simulates n_neurons neurons in each
+        of the n_populations populations and keeps only the current voltages, the population rates and the voltages
+        of the first n_rec neurons of each population at every rec_every-th time step.
+
+        The populations are coupled mean-field like in FPE_Population (all-to-all, weights scaled by 1/n_neurons):
+        population j gets the additional drive sum_k weights[k, j] * (delay_kernel * r_k)(t) in mV, with r_k the
+        population rate in 1/ms.
+
+        Parameters used from __init__:
+            Iinj: None or input current [A] of shape (n_populations, time_steps) (1d: same input for all populations)
+            V_th, V_reset, t_ref: scalars or one value per population
+            weights: None or connectivity matrix [mV*ms] of shape (n_populations, n_populations), from k to j
+            delay_kernel: None (alpha kernel as in FPE_Population) or kernel [1/ms] on the time grid dt
+
+        Results:
+            self.pop_rate: population rates [Hz], shape (n_populations, time_steps)
+            self.v: recorded voltages [mV], shape (n_populations, n_rec, len(self.t_rec))
+        save=True writes them with save_populations() for plot_populations()
+        """
+        rng = np.random.default_rng(seed)
+        n, n_pop, n_t = self.n_neurons, self.n_populations, self.time_steps
+        n_rec = min(n_rec, n)
+        V_th, V_reset, t_ref = (np.broadcast_to(np.asarray(x, dtype=float), (n_pop,))[:, None]
+                                for x in (self.V_th, self.V_reset, self.t_ref))
+
+        mu_ext = np.zeros((n_pop, n_t))  # external input [mV]
+        if self.Iinj is not None:
+            mu_ext[:] = np.asarray(self.Iinj) / self.g_r * 1e3
+        W = np.zeros((n_pop, n_pop)) if self.weights is None else np.asarray(self.weights, dtype=float)
+        coupled = np.any(W != 0)
+        kernel = self.delay_kernel
+        if kernel is None:
+            # alpha kernel with the defaults of FPE_Population.get_delay_kernel
+            n_alpha, tau_alpha = 9, 1 / 3
+            t_alpha = self.t[self.t < 10]
+            kernel = np.exp(-t_alpha / tau_alpha) / (tau_alpha * factorial(n_alpha - 1)) * \
+                (t_alpha / tau_alpha) ** (n_alpha - 1)
+            kernel = kernel / np.trapz(kernel, dx=self.dt)
+
+        n_ref = np.rint(t_ref / self.dt)  # refractory time steps
+        use_ref = np.any(n_ref > 0)
+        ref_counter = np.zeros((n_pop, n))
+
+        v = np.minimum(rng.normal(self.V_init, self.init_pdf_sigma, (n_pop, n)), V_th - 0.1)
+        s = self.noise_sigma * np.sqrt(2 * self.dt / self.tau_m) # stochastic part of the input
+        r = np.zeros((n_pop, n_t))  # population rate [1/ms]
+        self.t_rec = self.t[::rec_every]
+        v_rec = np.zeros((n_pop, n_rec, len(self.t_rec))) #  recorded voltage
+
+        for i in tqdm(range(n_t - 1), f'simulating network for {n_t - 1} time steps', disable=not self.verbose):
+            # delayed population rates
+            if coupled:
+                n_k = min(i + 1, len(kernel))
+                r_conv = r[:, i - n_k + 1:i + 1][:, ::-1] @ kernel[:n_k] * self.dt
+                mu = mu_ext[:, i] + W.T @ r_conv
+            else: # not needed in single population run
+                mu = mu_ext[:, i]
+            fired = v >= V_th
+            if use_ref: # if refractory period is used
+                refractory = ref_counter > 0
+                fired &= ~refractory
+                np.copyto(v, V_reset, where=refractory)
+                ref_counter[refractory] -= 1
+                np.copyto(ref_counter, n_ref, where=fired)
+            r[:, i] = fired.sum(axis=1) / (n * self.dt)
+            np.copyto(v, V_reset, where=fired) #move fired neurons to V_reset
+            if i % rec_every == 0:
+                v_rec[:, :, i // rec_every] = v[:, :n_rec]
+            v += (-(v - self.E_rest) + mu[:, None]) * (self.dt / self.tau_m) + s * rng.standard_normal((n_pop, n))
+        r[:, -1] = r[:, -2]
+
+        self.pop_rate = r * 1000 # conversion from 1/ms to 1/s
+        self.v = v_rec
+        self.rec_every = rec_every
+        self.simulation_done = True
+        if save:
+            self.save_populations()
+
+    def save_populations(self):
+        """write the results of run_low_mem in the format of run(), so plot_populations() can be used"""
+        n_rec = self.v.shape[1]
+        # plot_populations expects spike counts of the n_rec neurons in 'v' per time step dt
+        counts = np.add.reduceat(self.pop_rate / 1000, np.arange(0, self.time_steps, self.rec_every), axis=1) \
+            / self.rec_every * n_rec * self.dt
+        with h5py.File(self.fname + '.hdf5', 'w') as h5file:
+            h5file.create_dataset('t', data=self.t_rec)
+            h5file.create_dataset('v', data=self.v)
+            h5file.create_dataset('r', data=counts)
+            h5file.create_dataset('p_types', data=self.population_type)
+        self.type_mask = np.repeat(np.arange(self.n_populations), n_rec)
+
 
 class Conductance_LIF(Neuron_population):
 
@@ -387,7 +598,9 @@ class Conductance_LIF(Neuron_population):
         self.t = np.arange(0, self.T, self.dt)
         self.time_steps = self.t.shape[0]
         if type(self.Iinj) is np.ndarray:
-            self.Vinj = (self.Iinj + np.random.normal(0, self.noise_sigma, self.Iinj.shape)) / self.g_r
+            voltage_noise = np.random.normal(0, self.noise_sigma, self.Iinj.shape)
+            ext_voltage = self.Iinj / self.g_r
+            self.Vinj = ext_voltage + voltage_noise
 
         if not 'type_mask' in parameters:
             self.type_mask = np.zeros(self.n_neurons)
@@ -526,9 +739,10 @@ class Conductance_LIF(Neuron_population):
                         inputs = (1 - np.exp(-amp_mat)) * (E_e_i_presyn - v_neuron_postsyn_mat)
                         input = np.sum(inputs, axis=0)
                     # update input spikes from poisson conductance changes
-                    v_inputs_ext = (1 - np.exp(-self.Vinj[:, it])) * (self.E_e_i[self.spike_type] - self.v[:, it-1])
+                    # v_inputs_ext = (1 - np.exp(-self.Vinj[:, it])) * (self.E_e_i[self.spike_type] - self.v[:, it-1])
+                    v_inputs_ext = self.Vinj[:, it]
                     input += v_inputs_ext  # * 1/(1/self.tau_m)
-                    input = input * 1/(1/self.tau_m)
+                    input = input * (1/self.tau_m)
 
             else:
                 Iin = self.Iinj + self.Iext
@@ -654,7 +868,7 @@ class Conductance_LIF(Neuron_population):
                 coeff_of_var = coeff_of_var[time_frame[0], time_frame[1]]
         return coeff_of_var
 
-    def clean(self, opt=None):
+    def clean(self):
         if self.simulation_done:
             os.remove(self.name + '.hdf5')
 

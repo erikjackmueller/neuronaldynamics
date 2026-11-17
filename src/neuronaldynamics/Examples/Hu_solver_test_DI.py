@@ -50,13 +50,13 @@ if plot_nykamp_basic:
     nyk1D.simulate()
     nyk1D.plot(heat_map=True, plot_input=True, crop_rate=True, z_limit=0.001, animate=False, savefig=False)
     nyk1D.clean()
-    rhos = nyk1D.rho
-    # change in rho area
-    drho = np.sum(rhos[0, :, 5]) - np.sum(rhos[0, :, -1])
-    print(f"change in rho: {drho}")
-    print(f'rho end: {np.sum(rhos[0, :, -1])}')
+    ps = nyk1D.p
+    # change in p area
+    dp = np.sum(ps[0, :, 5]) - np.sum(ps[0, :, -1])
+    print(f"change in p: {dp}")
+    print(f'p end: {np.sum(ps[0, :, -1])}')
 
-    u = rhos[0].T
+    u = ps[0].T
     u_rest = nyk1D.u_rest
     x = nyk1D.v
     fig = plt.figure()
@@ -184,15 +184,15 @@ if plot_di_model:
     voltage_signal = di_model.mass_model_v_out
     # peak_values = get_peak_values(t, voltage_signal, find_peak_args=dict(height=0.5), plot=True)
     # print(f'{peak_values["t_delta_peaks"]}')
-    # rhos = di_model.mass_model.rho
-    # # change in rho area
-    # drho = np.sum(rhos[0, :, 5]) - np.sum(rhos[0, :, -1])
-    # print(f"change in rho: {drho}")
-    # print(f'rho end: {np.sum(rhos[0, :, -1])}')
+    # ps = di_model.mass_model.p
+    # # change in p area
+    # dp = np.sum(ps[0, :, 5]) - np.sum(ps[0, :, -1])
+    # print(f"change in p: {dp}")
+    # print(f'p end: {np.sum(ps[0, :, -1])}')
     di_model.labelsize=17
     di_model.plot_validation(fixed_ylim=False, save_fig=save_figs, labels=['Population Model', 'Measurement'])
     di_model.mass_model.clean()
-    plt.plot(di_model.mass_model.rho[0, : , -1])
+    plt.plot(di_model.mass_model.p[0, : , -1])
     plt.show()
 
     # extra PA, LM examples

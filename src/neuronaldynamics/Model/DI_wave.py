@@ -303,18 +303,20 @@ class DI_wave_simulation():
         else:
             plt.show()
     def plot_voltage(self, savefig=False):
-
-        fig = plt.figure(figsize=(7, 5))
+        # figsize_factor = self.labelsize/15 # leads to scaling of figure with same axis deescription ratio
+        figsize_factor = 1
+        fig = plt.figure(figsize=(7*figsize_factor, 5*figsize_factor))
         ax = fig.add_subplot(111)
         ax.plot(self.t, self.mass_model_v_out, linewidth=2, c='indianred')  # hotfixes...
         ax.set_xlabel('t (ms)', fontsize=self.labelsize)
         ax.set_ylabel('v (µV)', fontsize=self.labelsize)
         ax.set_ylim(0, self.mass_model_v_out.max() * 1.1)
-        ax.set_ylim(0, 4)
+        ax.set_ylim(-1.5, 2.2)
         ax.set_xlim((2, self.t.max()))
         ax.spines['right'].set_visible(False)
         ax.spines['top'].set_visible(False)
         ax.tick_params(axis='both', which='major', labelsize=self.labelsize)
+        plt.tight_layout()
         if savefig:
             plt.savefig(self.name + '_out_voltage.png')
         else:

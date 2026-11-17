@@ -3,13 +3,13 @@ import matplotlib.pyplot as plt
 import matplotlib
 import scipy
 from Utils import get_I_wave_locs, argmin_2d, butter_highpass_filter, get_peak_values
-from Model import generate_EP
+from Model.Neck import generate_EP
 import h5py
 from tqdm.contrib import itertools
 
 matplotlib.use('TkAgg')
-plt.rcParams["font.family"] = "serif"
-plt.rcParams["font.serif"] = ["Times New Roman"]
+# plt.rcParams["font.family"] = "serif"
+# plt.rcParams["font.serif"] = ["Times New Roman"]
 
 dt = 0.01
 dv = 0.01
@@ -17,20 +17,21 @@ T = 14
 
 highpass = True
 section = False
-make_hist_figs = False
-make_boxplots = True
+make_hist_figs = True
+make_boxplots = False
 
 t = np.arange(0, T, dt)
 Nt = t.shape[0]
 detrend = False
 
-# fn_session = '/home/erik/Downloads/gpc.pkl'
+fn_session = '/home/erik/Downloads/gpc.pkl'
 # fn_session = 'C:\\Users\\emueller\\Downloads\\gpc.pkl'
-fn_session = 'C:\\Users\\User\\Downloads\\gpc.pkl'
+# fn_session = 'C:\\Users\\User\\Downloads\\gpc.pkl'
 # hdf5_path = "C:\\Users\\User\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data.hdf5"
 if not detrend:
     # hdf5_path = "C:\\Users\\emueller\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data.hdf5"
-    hdf5_path = "C:\\Users\\User\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data.hdf5"
+    # hdf5_path = "C:\\Users\\User\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data.hdf5"
+    hdf5_path = "/home/erik/Nextcloud_Uni/TMS Neuro Projects/M1_modeling/DI_wave_data/extracted_DI_waves/DiLazarro_di_wave_data.hdf5"
 else:
     # hdf5_path = "C:\\Users\\emueller\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data_detrended.hdf5"
     hdf5_path = "C:\\Users\\User\\Nextcloud\\TMS Neuro Projects\\M1_modeling\\DI_wave_data\\extracted_DI_waves\\DiLazarro_di_wave_data_detrended.hdf5"

@@ -22,16 +22,16 @@ pars = {'dt': dt, 'T': T, 'input_function': random_signal_exc, 'multiple_inputs'
 nyk1D = Nykamp_Model_1(parameters=pars, name='nyk_random')
 
 nyk1D.simulate()
-rhos = nyk1D.rho[0]
+ps = nyk1D.p[0]
 vs = nyk1D.v
-rhos_end = rhos[:, -1000:]
-std_end = np.std(rhos_end, axis=0)
-mean_end = np.mean(rhos_end)
+ps_end = ps[:, -1000:]
+std_end = np.std(ps_end, axis=0)
+mean_end = np.mean(ps_end)
 mean_std = np.mean(std_end)
 print(f'mean std {mean_std}')
 print(f'mean {mean_end}')
 for i in [0, 100, 200, 300, 400, 500, 600, 700, 800, 900, 980]:
-    plt.plot(vs, rhos_end[:, i])
+    plt.plot(vs, ps_end[:, i])
 plt.show()
 nyk1D.plot(heat_map=True, plot_input=False)
 nyk1D.save_log()

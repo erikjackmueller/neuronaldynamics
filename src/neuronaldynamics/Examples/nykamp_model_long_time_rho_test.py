@@ -31,11 +31,11 @@ if plot_di_model:
     di_model = DI_wave_simulation(parameters=parameters, logname=None)
     di_model.simulate()
     di_model.mass_model.plot(heat_map=True, plot_input=True, plot_combined=True, z_limit=0.2, animate=False, savefig=True)
-    rhos = di_model.mass_model.rho
-    # change in rho area
-    drho = np.sum(rhos[0, :, 5]) - np.sum(rhos[0, :, -1])
-    print(f"change in rho: {drho}")
-    print(f'rho end: {np.sum(rhos[0, :, -1])}')
+    ps = di_model.mass_model.p
+    # change in p area
+    dp = np.sum(ps[0, :, 5]) - np.sum(ps[0, :, -1])
+    print(f"change in p: {dp}")
+    print(f'p end: {np.sum(ps[0, :, -1])}')
     di_model.plot_input_current()
     di_model.plot_validation()
     di_model.mass_model.clean()
@@ -81,8 +81,8 @@ if plot_rate_model:
     nyk1D.clean()
 
 
-    rhos = nyk1D.rho
-    # change in rho area
-    drho = np.sum(rhos[0, :, 5]) - np.sum(rhos[0, :, -1])
-    print(f"change in rho rate model: {drho}")
-    print(f'rho end: {np.sum(rhos[0, :, -1])}')
+    ps = nyk1D.p
+    # change in p area
+    dp = np.sum(ps[0, :, 5]) - np.sum(ps[0, :, -1])
+    print(f"change in p rate model: {dp}")
+    print(f'p end: {np.sum(ps[0, :, -1])}')

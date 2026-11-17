@@ -5,7 +5,7 @@ import os
 import matplotlib
 from Model.DI_wave import DI_wave_simulation
 from tqdm.contrib import itertools
-from Model import generate_EP
+from Model.Neck import generate_EP
 import scipy
 from Utils import butter_highpass_filter
 matplotlib.use('TkAgg')

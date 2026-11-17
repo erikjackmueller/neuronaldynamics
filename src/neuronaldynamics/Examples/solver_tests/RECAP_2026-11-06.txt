@@ -1,0 +1,128 @@
+RECAP 2026-11-06: FPE solvers for Izhikevich (IK) populations, state of the work and next steps
+=================================================================================================
+
+1. WHERE THINGS STAND
+---------------------
+Test case that is still hard: 3 coupled populations (exc 1 with input, exc 2, inh) with feedback to exc 1,
+sigma = 1 mV, step input, T = 200 ms (FPE_vs_IK_network.py). Error = rel. L2 of the rates after 2 ms smoothing,
+against the average of IK networks with >= 100k neurons per population (reference converged to 1-2 %).
+
+    model                                              step      20 Hz sine   time (s)
+    IK network 20k neurons                             0.018     0.023        72-81
+    FPE 'conditional_variance', dv 0.1, dt 0.05        0.73      0.27         2.5
+    FPE 'conditional_second_moment' + FCT, dt 0.005    0.42      0.17         60-75
+    FPE 'conditional_quadrature' + FCT, dt 0.005       0.43      0.15         110-125
+    2D (v, u) solver, du 2 pA, dt 0.01                 0.58      0.16         824
+
+- dt is converged (corrector pass not needed), the IK reference is converged: the remaining 1D error is closure error.
+- The two-node quadrature closure ('conditional_quadrature') is the best 1D closure overall: 1 pop RS default 2.7 %
+  (below the 5.1 % finite-size error of IK 20k), 3 pop sigma = 3.16 mV 2.2 %. Only the 3 pop sigma = 1 mV step case
+  stays at ~0.42.
+- The 2D solver (Model/Izhikevich_2D.py, no closure) converges in du and is the only model that produces the
+  post-stimulus volley of exc 2 (~118 ms) and the inhibitory burst it triggers, still 4-5 ms early on du = 2 pA.
+- Montbrio-Pazo-Roxin + mean adaptation (MPR_comparison.py): 0.43-0.83 even with fitted Delta, not suitable.
+
+2. 2D CONVERGENCE RUN (finished, already in the textbook)
+---------------------------------------------------------
+FPE_2D_convergence_3pop.py, 3 pop, sigma = 1 mV, step, dv = 0.1 mV (results in
+FPE_2D_reference_test/convergence_3pop_step_1.csv):
+    du 2 pA, dt 0.01: 0.579    du 2 pA, dt 0.005: 0.584    du 1 pA, dt 0.01: 0.547    du 1 pA, dt 0.005: 0.547
+The 2D solution is converged in dt and nearly in du, but saturates at ~0.55 (above the 1D closures, 0.42), and its
+spike count error changes strongly with du (0.34 at 2 pA, 0.83 at 1 pA): whether the post-stimulus volley appears
+is not stable. Open: refine dv (0.05 mV) for the 2D solver (the 1D grid study gained from dv = 0.05 at sigma = 1 mV),
+or use MIIND (4b) as independent control. The textbook (section 15, label sec:dt2d:2d) has this result.
+
+3. FILES OF TODAY
+-----------------
+Model/Nykamp_Model.py      rho -> p renamed (old names still accepted), numba kernels + numpy fallback
+                           (use_numba), flux_limiter='fct' (LIF simulate() and IK), v_grid='refined', n_corrector,
+                           closures 'conditional_second_moment' and 'conditional_quadrature'
+Model/Izhikevich_2D.py     FPE_Izhikevich2D: closure-free (v, u) solver (numba or numpy)
+Model/FPE_mini.py          FPE_mini: original Hu et al. 2021 scheme, one population, optional self-feedback
+Examples/solver_tests/     all tests, one result folder each; test_FPE_mini.py is the FPE_mini example (simulation,
+                           old plot, LIF comparison), to be renamed
+Textbook                   NNLIF_solver_update.tex/.pdf (75 pages): sections 12-16 (resolution and networks, FCT,
+                           order-3 closure, dt/reference/quadrature/2D, MPR comparison)
+
+4. ALTERNATIVES NOT TRIED YET
+-----------------------------
+(a) Refractory density / age-structured methods
+    Idea: describe the population not by the membrane potential but by the time since the last spike (age a). All
+    neurons that fired together have the same age, and for adapting neurons the adaptation is mainly a function of
+    the spike history. That is exactly the information the 1D closures lose after a synchronised volley (bimodal u at
+    the reset), so this description fits the failing case naturally.
+    - Renewal / refractory density equation: dq(a, t)/dt + dq/da = -H(a, t) q, rate r(t) = q(0, t) = int H q da,
+      with the hazard H(a, t) (escape rate). One 1D transport equation in a, no diffusion term, easy to solve.
+    - Quasi-renewal (Naud & Gerstner 2012) and the mesoscopic population equations of Schwalger, Deger & Gerstner
+      (PLoS Comput Biol 13:e1005507, 2017) extend this to adapting neurons (adaptation as a sum over past spikes) and
+      to finite populations (they even give the finite-size fluctuations).
+    - Conductance-based refractory density (CBRD, Chizhov & Graham, Phys Rev E 75:011924, 2007, and later work by
+      Chizhov) keeps for each age the mean voltage and the gating / adaptation variables of the neurons of that age
+      and uses a hazard derived from the Gaussian noise; designed for Hodgkin-Huxley-type and adapting neurons.
+    - Cost: comparable to our 1D FPE (one or a few 1D fields in age).
+    - Catch: the hazard H for Gaussian current noise is not exact; it needs an approximation (e.g. the Chizhov
+      hazard, or an escape rate fitted to the noise). The error then moves from the adaptation closure to the
+      hazard. Worth testing on the 3 pop sigma = 1 mV case because the threshold event is a spike-history effect.
+(b) MIIND (de Kamps et al.)
+    Software for population density methods in 1D and 2D (C++/CUDA with a Python interface): the deterministic
+    flow of the neuron model (e.g. adaptive EIF, Izhikevich, Fitzhugh-Nagumo) is followed on a mesh that moves along
+    the characteristics, so there is no numerical diffusion of the transport; noise is a jump process (Poisson input
+    with small jumps, which approximates Gaussian noise for many small jumps). GPU version for large meshes.
+    - de Kamps et al., Computational geometry for modeling neural populations: from visualization to simulation,
+      PLoS Comput Biol 15(3):e1006729, 2019; Lai & de Kamps, Population density equations for stochastic processes
+      with memory kernels, Phys Rev E 95:062125, 2017; MIIND repository on GitHub.
+    - Use here: an independent 2D control for FPE_Izhikevich2D and the closures (same network, same input), in
+      particular in the sigma = 1 mV case where our 2D solver is not yet converged. Things to match: the noise
+      (MIIND uses jumps; choose jump size and rate so that mean and variance of the input match sigma), the reset
+      (c, u + d), and the mean-field coupling with the alpha kernel.
+    - Catch: installation (C++ build, CUDA optional) and the conversion of the noise model; not a production
+      replacement, but a good error control.
+(c) Smaller items
+    - 2D solver on a GPU (the u lines are independent within a step) or with adaptive u range: would make it fast
+      enough to use as a model, not only as reference.
+    - Error measure: timing-tolerant measures (spike counts per window, cross-correlation lag) for bursting
+      populations; L2 in 1 ms bins mainly measures jitter.
+
+
+5. CONCLUSIONS OF TODAY AND WHERE TO PICK UP
+--------------------------------------------
+Conclusions
+- Numerics of the 1D FPE are solved: dt converged (~0.005 ms in the hard case, 0.01-0.05 otherwise), grid choice
+  dv = 0.1 mV / dt = 0.05 ms is fine for sigma >= 2 mV, FCT removes the numerical diffusion of the SG flux at low
+  noise (LIF and IK; e.g. LIF sigma = 0.5 mV: error 54 % -> 10 % at dv = 0.1), numba makes it 2-4x faster (numpy
+  fallback identical). The IK reference networks are converged in N (1-2 %).
+- Closures: mean < conditional < variance < 2nd moment (Gaussian) < two-node quadrature. The two-node closure
+  ('conditional_quadrature' + FCT) is the recommended default for IK populations: within the finite-size error of
+  IK 20k for one population and for the network at sigma = 3.16 mV, at 1/2-1/40 of the network's time.
+- The open case is the 3 pop network at sigma = 1 mV with step input: best 1D error 0.42 (20 Hz sine 0.15), driven by
+  a threshold event (post-stimulus volley of exc 2 at ~118 ms that triggers an inhibitory burst) which the 1D closures
+  miss completely.
+- The 2D (v, u) solver reproduces the event qualitatively but saturates at ~0.55 on dv = 0.1 mV.
+- MPR (Montbrio-Pazo-Roxin) is not suitable for noisy adapting IK populations with finite reset (0.43-0.83).
+
+Why the 2D run is still imprecise (diagnosis, not yet tested)
+- Most likely the numerical diffusion of the SG flux in v: the 2D solver has NO FCT, while the best 1D runs used FCT.
+  The 1D quadrature closure on the same grid gives 0.540 without FCT and 0.425 with FCT; the 2D solver (without FCT)
+  gives 0.547, i.e. the comparison so far was 1D-with-FCT vs 2D-without-FCT.
+  Size of the effect: numerical diffusion ~ |h| dv / 2 vs physical D = sigma^2 / tau_noise = 0.1 mV^2/ms at
+  sigma = 1 mV. The inhibitory population (C = 20 pF) is driven at up to ~15 mV/ms during the volleys, which gives
+  D_num ~ 0.75 at dv = 0.1, several times the real noise: its bursts are smeared and mistimed, and the post-stimulus
+  volley depends on that timing. du and dt refinement cannot remove this (error is in v).
+- Other remaining approximations of the 2D solver, all expected to be small: Lie splitting of the u relaxation and the
+  v step (coupling a b / C ~ 6e-4 per ms, dt study confirms it is negligible); numerical diffusion of the u remap
+  (shrinks with du: 0.58 -> 0.55); drift uses the u cell centre (error <= du / (2C) = 0.01 mV/ms); mass beyond the u
+  range is lumped into the edge cells (not checked).
+- The reference itself: IK networks with Euler-Maruyama dt = 0.01 ms and spike detection on the grid; converged in N,
+  but its convergence in dt was not checked (small systematic bias possible).
+
+Next steps, in this order
+1. Add FCT to the 2D solver (Model/Izhikevich_2D.py, _v_lines_step / _v_lines_step_np): apply the same Zalesak limiter
+   as Nykamp_Model._fct_correct to every u line after the implicit v solve (fields = the line, g_plus / g_minus of
+   that line, alpha = 0 at the first and last interface so outflow and reinjection stay unchanged). Then rerun
+   FPE_2D_convergence_3pop.py for du = 1-2 pA, dt = 0.01 ms (~30-55 min per run).
+2. Run the 2D solver (and the quadrature closure) on dv = 0.05 mV for the same case.
+3. If 2D + FCT drops clearly below 0.42: use it as ground truth for this case and to judge the closures; if it also
+   stays near 0.42: check the reference (IK networks with dt = 0.005 / 0.0025 ms) and the threshold event itself.
+4. Independent control with MIIND (4b) for the sigma = 1 mV network.
+5. Optional: refractory density / CBRD (4a) as alternative 1D description for the spike-history effect.
+6. Housekeeping: rename Examples/solver_tests/test_FPE_mini.py (planned name FPE_mini.py), commit the work.

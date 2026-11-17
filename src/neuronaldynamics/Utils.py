@@ -214,11 +214,11 @@ def compare_solution(sol_1, sol_2, x=None, save_fname=None, titles = ['plot1', '
     fig = plt.figure(figsize=(10, 4.25))
     ax1 = fig.add_subplot(1, 2, 1)
     ax1.plot(x, sol_1)
-    ax1.plot(x, sol_2)
+    ax1.plot(x, sol_2, zorder=-5)
     ax2 = fig.add_subplot(1, 2, 2)
     ax2.plot(x, diff)
     ax2.set_title(f"Difference | nrmse: {error:.4f}")
-    ax1.set_label(['Nykamp', 'LIF'])
+    ax1.set_label([titles])
     ax1.set_xlabel('t in ms')
     ax2.set_xlabel('t in ms')
     ax1.set_title('Firing rates in Hz')
@@ -257,7 +257,8 @@ def plot_rates(solutions, x=None, save_fname=None, titles = ['Plot1', 'Plot2']):
     else:
         plt.savefig(save_fname)
 
-def compare_firing_rate(fname1, fname2, idx=0, n_neurons=1000, dt=0.1, smooth=True, save_fname=None):
+def compare_firing_rate(fname1, fname2, idx=0, n_neurons=1000, dt=0.1,
+                        smooth=True, sigma=10, save_fname=None):
     """
     Function specifically for comparing the firing rate between a NMM that produces r as output and a LIF network
      that needs some formatting and filtering to get the output into the proper firing rate shape
@@ -279,7 +280,7 @@ def compare_firing_rate(fname1, fname2, idx=0, n_neurons=1000, dt=0.1, smooth=Tr
     r_compare_2 = r2[idx]*(1/dt)*(1000/n_neurons)
     r_compare_1 = r1[idx] * 1000
     if smooth:
-        r_compare_2 = gaussian_filter1d(r_compare_2, sigma=10)
+        r_compare_2 = gaussian_filter1d(r_compare_2, sigma=sigma)
     compare_solution(r_compare_1, r_compare_2, x=t, save_fname=save_fname, titles=[fname1, fname2])
 
 

@@ -4,10 +4,12 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="9b51d629-3369-4813-b853-c56b9a2681df" name="Changes" comment="[UPD] continuation of vectorized version of FPE_population computation">
+    <list default="true" id="9b51d629-3369-4813-b853-c56b9a2681df" name="Changes" comment="[ADD]: added new test for Izhikevich Neuron FPE specifically targeting adaption and smoother sine input.">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/DI_model_vec_test.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/neuronaldynamics/Examples/DI_model_vec_test.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/Hu_solver_test_DI.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/neuronaldynamics/Examples/Hu_solver_test_DI.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_Izhikevich_adaptation_test.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_Izhikevich_validation.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_solver_comparison.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_vs_LIF_timing.py" beforeDir="false" />
       <change beforePath="$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
@@ -53,31 +55,43 @@
   <component name="PropertiesComponent"><![CDATA[{
   "keyToString": {
     "ModuleVcsDetector.initialDetectionPerformed": "true",
-    "Python.CNS_2026_FPE_version.executor": "Debug",
+    "Python.CNS_2026_FPE_version.executor": "Run",
     "Python.DI_model_vec_test.executor": "Run",
     "Python.DI_wave_optimizer_GA_hp.executor": "Run",
     "Python.DI_wave_optimizer_paper_hp.executor": "Run",
+    "Python.DiLazzaro_data_analysis.executor": "Run",
+    "Python.FPE_Izhikevich_adaptation_test.executor": "Run",
+    "Python.FPE_Izhikevich_validation.executor": "Run",
+    "Python.FPE_vs_LIF_timing.executor": "Run",
     "Python.Hu_solver_test_DI (1).executor": "Run",
     "Python.Hu_solver_test_DI.executor": "Run",
     "Python.I_wave_peak_differences.executor": "Run",
+    "Python.LIF_and_FPE_solver_2026.executor": "Run",
     "Python.Paired_pulse_test.executor": "Run",
     "Python.Time_series_opt_test.executor": "Run",
     "Python.fib_run_all_local_copy (1).executor": "Run",
     "Python.fib_run_all_local_copy (2).executor": "Run",
     "Python.fib_run_all_local_copy.executor": "Debug",
+    "Python.noise_LIF_network.executor": "Run",
+    "Python.noise_LIF_network_2026.executor": "Run",
+    "Python.plot_optimization_results_bundel.executor": "Run",
+    "Python.plot_optimization_results_bundle.executor": "Run",
+    "Python.scratch_4.executor": "Debug",
     "RunOnceActivity.ShowReadmeOnStart": "true",
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
     "codeWithMe.voiceChat.enabledByDefault": "false",
     "git-widget-placeholder": "main",
-    "last_opened_file_path": "/home/erik/PycharmProjects/neuronaldynamics",
+    "last_opened_file_path": "/home/erik/PycharmProjects/neuronaldynamics/src/neuronaldynamics/Examples",
     "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.jshint": "true",
     "node.js.detected.package.tslint": "true",
     "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.jshint": "",
     "node.js.selected.package.tslint": "(autodetect)",
     "nodejs_package_manager_path": "npm",
-    "settings.editor.selected.configurable": "org.jetbrains.plugins.gitlab.GitLabSettingsConfigurable"
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable"
   },
   "keyToStringList": {
     "com.intellij.ide.scratch.ScratchImplUtil$2/New Scratch File": [
@@ -94,7 +108,7 @@
       <recent name="$PROJECT_DIR$/src" />
     </key>
   </component>
-  <component name="RunManager" selected="Python.Hu_solver_test_DI (1)">
+  <component name="RunManager" selected="Python.FPE_Izhikevich_adaptation_test">
     <configuration name="CNS_2026_FPE_version" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="neuronaldynamics" />
       <option name="ENV_FILES" value="" />
@@ -119,7 +133,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="DI_model_vec_test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="FPE_Izhikevich_adaptation_test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="neuronaldynamics" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -134,7 +148,7 @@
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="DEBUG_JUST_MY_CODE" value="false" />
       <option name="RUN_TOOL" value="" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/DI_model_vec_test.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_Izhikevich_adaptation_test.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -143,31 +157,7 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="DI_wave_optimizer_paper_hp" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
-      <module name="neuronaldynamics" />
-      <option name="ENV_FILES" value="" />
-      <option name="INTERPRETER_OPTIONS" value="" />
-      <option name="PARENT_ENVS" value="true" />
-      <envs>
-        <env name="PYTHONUNBUFFERED" value="1" />
-      </envs>
-      <option name="SDK_HOME" value="" />
-      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src/neuronaldynamics/Optimization_scripts" />
-      <option name="IS_MODULE_SDK" value="true" />
-      <option name="ADD_CONTENT_ROOTS" value="true" />
-      <option name="ADD_SOURCE_ROOTS" value="true" />
-      <option name="DEBUG_JUST_MY_CODE" value="false" />
-      <option name="RUN_TOOL" value="" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Optimization_scripts/DI_wave_optimizer_paper_hp.py" />
-      <option name="PARAMETERS" value="" />
-      <option name="SHOW_COMMAND_LINE" value="false" />
-      <option name="EMULATE_TERMINAL" value="false" />
-      <option name="MODULE_MODE" value="false" />
-      <option name="REDIRECT_INPUT" value="false" />
-      <option name="INPUT_FILE" value="" />
-      <method v="2" />
-    </configuration>
-    <configuration name="Hu_solver_test_DI (1)" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="FPE_Izhikevich_validation" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="neuronaldynamics" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -182,7 +172,7 @@
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="DEBUG_JUST_MY_CODE" value="false" />
       <option name="RUN_TOOL" value="" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/Hu_solver_test_DI.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_Izhikevich_validation.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -191,7 +181,31 @@
       <option name="INPUT_FILE" value="" />
       <method v="2" />
     </configuration>
-    <configuration name="Paired_pulse_test" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+    <configuration name="FPE_vs_LIF_timing" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src/neuronaldynamics/Examples" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <module name="" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/FPE_vs_LIF_timing.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="noise_LIF_network_2026" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="neuronaldynamics" />
       <option name="ENV_FILES" value="" />
       <option name="INTERPRETER_OPTIONS" value="" />
@@ -206,7 +220,7 @@
       <option name="ADD_SOURCE_ROOTS" value="true" />
       <option name="DEBUG_JUST_MY_CODE" value="false" />
       <option name="RUN_TOOL" value="" />
-      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/Paired_pulse_test.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/neuronaldynamics/Examples/noise_LIF_network_2026.py" />
       <option name="PARAMETERS" value="" />
       <option name="SHOW_COMMAND_LINE" value="false" />
       <option name="EMULATE_TERMINAL" value="false" />
@@ -217,18 +231,18 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.Hu_solver_test_DI (1)" />
-        <item itemvalue="Python.DI_model_vec_test" />
-        <item itemvalue="Python.Paired_pulse_test" />
+        <item itemvalue="Python.FPE_Izhikevich_adaptation_test" />
+        <item itemvalue="Python.FPE_Izhikevich_validation" />
         <item itemvalue="Python.CNS_2026_FPE_version" />
-        <item itemvalue="Python.DI_wave_optimizer_paper_hp" />
+        <item itemvalue="Python.FPE_vs_LIF_timing" />
+        <item itemvalue="Python.noise_LIF_network_2026" />
       </list>
     </recent_temporary>
   </component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-python-sdk-024ed6589d45-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.23567.174" />
+        <option value="bundled-python-sdk-821f704e66d9-5bd6d13a2a75-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-262.9437.214" />
       </set>
     </attachedChunks>
   </component>
@@ -328,11 +342,78 @@
       <option name="project" value="LOCAL" />
       <updated>1780416811225</updated>
     </task>
-    <option name="localTasksCounter" value="12" />
+    <task id="LOCAL-00012" summary="[UPD]: di model update">
+      <option name="closed" value="true" />
+      <created>1791793061354</created>
+      <option name="number" value="00012" />
+      <option name="presentableId" value="LOCAL-00012" />
+      <option name="project" value="LOCAL" />
+      <updated>1791793061354</updated>
+    </task>
+    <task id="LOCAL-00013" summary="[UPD]: updates to old LIF population, shift away from conductance LIF">
+      <option name="closed" value="true" />
+      <created>1791918751162</created>
+      <option name="number" value="00013" />
+      <option name="presentableId" value="LOCAL-00013" />
+      <option name="project" value="LOCAL" />
+      <updated>1791918751162</updated>
+    </task>
+    <task id="LOCAL-00014" summary="[UPD]: set new solver settings as default and updated clipping to preserve mass in FPE simulations">
+      <option name="closed" value="true" />
+      <created>1792497134317</created>
+      <option name="number" value="00014" />
+      <option name="presentableId" value="LOCAL-00014" />
+      <option name="project" value="LOCAL" />
+      <updated>1792497134317</updated>
+    </task>
+    <task id="LOCAL-00015" summary="[ADD]: New file for comparing new solver to old one and some LIF output. Should be publication ready, test on a stronger machine">
+      <option name="closed" value="true" />
+      <created>1792740437879</created>
+      <option name="number" value="00015" />
+      <option name="presentableId" value="LOCAL-00015" />
+      <option name="project" value="LOCAL" />
+      <updated>1792740437879</updated>
+    </task>
+    <task id="LOCAL-00016" summary="[UPD]: updated FPE, LIF timing, such that it can take any number of repeats for the timing. results are a bit cleaner this way">
+      <option name="closed" value="true" />
+      <created>1793687158439</created>
+      <option name="number" value="00016" />
+      <option name="presentableId" value="LOCAL-00016" />
+      <option name="project" value="LOCAL" />
+      <updated>1793687158440</updated>
+    </task>
+    <task id="LOCAL-00017" summary="[ADD]: added new test filfe for testing Izhikevich neurons in FPE model">
+      <option name="closed" value="true" />
+      <created>1793811753667</created>
+      <option name="number" value="00017" />
+      <option name="presentableId" value="LOCAL-00017" />
+      <option name="project" value="LOCAL" />
+      <updated>1793811753667</updated>
+    </task>
+    <task id="LOCAL-00018" summary="[ADD]: added new test for Izhikevich Neuron FPE specifically targeting adaption and smoother sine input.">
+      <option name="closed" value="true" />
+      <created>1793888064328</created>
+      <option name="number" value="00018" />
+      <option name="presentableId" value="LOCAL-00018" />
+      <option name="project" value="LOCAL" />
+      <updated>1793888064328</updated>
+    </task>
+    <option name="localTasksCounter" value="19" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
     <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="[MOD] minor changes to allow for running on the MPI sever" />
@@ -344,7 +425,14 @@
     <MESSAGE value="[UPD] continuation of vectorized version of FPE_population computation" />
     <MESSAGE value="[UPD] finished vectorized version of DI_wave model simulation, takes lots of RAM, bad on PCs with low RAM" />
     <MESSAGE value="[FIX] fixed major error in simulation set computation" />
-    <option name="LAST_COMMIT_MESSAGE" value="[FIX] fixed major error in simulation set computation" />
+    <MESSAGE value="[UPD]: di model update" />
+    <MESSAGE value="[UPD]: updates to old LIF population, shift away from conductance LIF" />
+    <MESSAGE value="[UPD]: set new solver settings as default and updated clipping to preserve mass in FPE simulations" />
+    <MESSAGE value="[ADD]: New file for comparing new solver to old one and some LIF output. Should be publication ready, test on a stronger machine" />
+    <MESSAGE value="[UPD]: updated FPE, LIF timing, such that it can take any number of repeats for the timing. results are a bit cleaner this way" />
+    <MESSAGE value="[ADD]: added new test filfe for testing Izhikevich neurons in FPE model" />
+    <MESSAGE value="[ADD]: added new test for Izhikevich Neuron FPE specifically targeting adaption and smoother sine input." />
+    <option name="LAST_COMMIT_MESSAGE" value="[ADD]: added new test for Izhikevich Neuron FPE specifically targeting adaption and smoother sine input." />
   </component>
   <component name="XDebuggerManager">
     <breakpoint-manager>
@@ -360,34 +448,54 @@
           <option name="timeStamp" value="9" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Optimizers/Optimizer.py</url>
-          <line>75</line>
-          <option name="timeStamp" value="11" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/DI_wave.py</url>
-          <line>668</line>
+          <line>670</line>
           <option name="timeStamp" value="12" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py</url>
-          <line>2046</line>
-          <option name="timeStamp" value="37" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py</url>
-          <line>2146</line>
-          <option name="timeStamp" value="81" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py</url>
-          <line>1262</line>
-          <option name="timeStamp" value="85" />
         </line-breakpoint>
         <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
           <url>file://$PROJECT_DIR$/src/neuronaldynamics/Examples/Hu_solver_test_DI.py</url>
           <line>177</line>
           <option name="timeStamp" value="86" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$APPLICATION_CONFIG_DIR$/scratches/scratch_4.py</url>
+          <line>15</line>
+          <option name="timeStamp" value="93" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Examples/CNS_2026_FPE_version.py</url>
+          <line>90</line>
+          <option name="timeStamp" value="95" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py</url>
+          <line>3210</line>
+          <option name="timeStamp" value="106" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/LIF.py</url>
+          <line>598</line>
+          <option name="timeStamp" value="110" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/LIF.py</url>
+          <line>373</line>
+          <option name="timeStamp" value="112" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/LIF.py</url>
+          <line>370</line>
+          <option name="timeStamp" value="113" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Model/Nykamp_Model.py</url>
+          <line>3120</line>
+          <option name="timeStamp" value="115" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/src/neuronaldynamics/Examples/LIF_and_FPE_solver_2026.py</url>
+          <line>55</line>
+          <option name="timeStamp" value="117" />
         </line-breakpoint>
       </breakpoints>
       <default-breakpoints>

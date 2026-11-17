@@ -1,0 +1,82 @@
+RECAP 2026-11-11: Heun as default, cost against converged networks, where the closure error starts
+====================================================================================================
+(continues RECAP_2026-11-09.txt; textbook: new subsections sec:refdt:cost (table tab:refdt:cost, fig:refdt:cost) and
+sec:refdt:diag, notes added at the old cost statements in sec:res:grid, sec:res:net, sec:m2:concl)
+
+1. CODE
+- MC_METHOD = 'heun' is the default for all IK network scripts (FPE_vs_IK_network.py, FPE_Izhikevich_resolution.py and
+  the scripts importing them). LIF unchanged. Results of Heun runs go to folders with the suffix _heun
+  (net.method_suffix()), the Euler results stay in the old folders. FPE_2D_reference_test.references() and
+  MPR_comparison.py still read the old Euler references on purpose.
+- Model/Izhikevich_2D.py: optional diagnostics snapshot_times (P_snap, t_snap) and save_flux_u (flux_u: u of the firing
+  neurons), off by default.
+- New: FPE_IK_cost_heun.py (cost table / work-precision against the converged references, all 6 cases),
+  FPE_closure_diagnostics.py (conditional moments of 1D closures vs 2D, hardest case).
+- Reruns with Heun: FPE_vs_IK_network_heun, FPE_vs_IK_network_sine_20Hz_heun, FPE_Izhikevich_resolution_heun.
+
+2. COST (errors against the converged references; times with 4 runs in parallel)
+- Heun costs 1.7-2.4x Euler per step. FPE timings in the old tables predate the compiled step: FPE now 0.4-0.7 s
+  (1 pop) / 1-3 s (3 pop) on dv 0.1, dt 0.05 -> 60-170x faster than a 20k Heun network (old text: 7-20x).
+- 1 pop: two-node FCT dt 0.05 (3 s) as accurate as a 20k-50k Heun network (33-118 s).
+- 3 pop sigma 3.16: two-node FCT dt 0.05 (9 s) 0.6 % = 20k network (144 s).
+- 3 pop sigma 1: best FPE 3.5-5 % (two-node, dt 0.01; dt 0.01 beating 0.005 in the step case is error cancellation),
+  between a 5k and a 10k network at similar cost; in the 20 Hz case a 5k network (1.4 %, 32 s) beats every FPE.
+- 2D + FCT: 10-20 min, worse than a 5k network in 5/6 cases; first-order closures 19-56 % (3 pop).
+- 1 ms-bin L2 is meaningless for the sharp Heun bursts (20k vs 100k: 43 % with identical-looking rates); use smoothed.
+
+3. CLOSURE DIAGNOSTICS (3 pop, sigma 1, step)
+- All first volleys right; first wrong volley: exc 1 second volley (65.85 vs 66.16 ms, 2D 66.09); exc 2 and inh follow.
+  inh has no adaptation -> error made in the adaptation of exc 1 between 30 and 66 ms.
+- Not the top-moment closure: two-node c4 is 60-72 % off the 2D c4, Gaussian 1-31 %, yet both 1D closures give the
+  same fields and the same error (0.124 / 0.122).
+- 1D <u> of exc 1 is 1.0-1.3 pA below 2D at 35-55 ms (E[u|v] 0.5-1.9 pA below) -> more excitable -> early volley.
+  But the 2D starts at <u> = +1 pA (initial mass in one u cell, cell centre) and its u remap broadens sd(u)
+  (3.1 vs 1.4 pA before the first volley), so the 2D is not exact at the 1 pA level.
+
+4. NEXT STEPS
+1. dt convergence of the 1D two-node closure in the hardest case (dt 0.0025, 0.00125): dt 0.01 vs 0.005 differ a lot.
+2. Network truth: <u>, E[u|v], Var[u|v] of exc 1 from a 100k Heun network; 2D initial condition with exact mean.
+3. If the 1D adaptation drifts: check the 1D moment equations (floor of conditional moments where p is small, explicit
+   extra flux F_k; FCT is already applied to p and all q_k with one common limiter, so that is not it).
+4. MIIND: not needed for the error analysis; only as a GPU 2D competitor later.
+5. Commit; merge only when asked. LIF references stay Euler (decision 2026-11-10).
+
+5. UPDATE (later the same day): THE REMAINING ERROR IS NOT CLOSURE ERROR (textbook sec:refdt:diag rewritten, table
+   tab:refdt:diag)
+- 1D closures converged in dt at 0.0025 ms: two-node 0.125, second moment 0.123 (dt 0.01: 0.035 / 0.066 = cancellation).
+- 100k Heun network with snapshots (ik_network(..., snapshot_times=...), FPE_closure_diagnostics.py run_dt / run_snap):
+  <u> of exc 1 in 1D = network to 0.05 pA up to 50 ms; p(v), E[u|v], sd(u|v) agree up to 46 ms. The 2D was 1-2 pA off
+  (initial condition in one u cell, u remap diffusion) -> point 3 of the morning recap is superseded.
+- Origin: the inhibitory tail burst 41-48 ms has 15 % too few spikes in 1D (450 vs 528-532 per 1000), exc 1 gets less
+  inhibition, fires 11 % more at 42-56 ms, its second volley is 0.45 ms early. inh has no adaptation (no closure) and
+  the tail burst depends on dv (dv 0.05: 481, exc 1 early spikes 56.8 vs network 56.1) -> v-resolution error.
+- The 2D solution has the same deficit (409); its right timing is a cancellation with its excess adaptation.
+- Next: two-node closure at dt 0.0025 on dv 0.05 / 0.025 / 0.0125 mV; if converging, a grid refined where the
+  inhibitory packets travel (reset -45 mV to threshold).
+
+6. OTHER CHANGES
+- FPE_mini moved into Model/Nykamp_Model.py (Model/FPE_mini.py removed), old Hu-2021 formulation (M, M_harm as values,
+  sparse solver), with c = D dt / dv^2, rate = scheme flux through threshold, potential shifted and capped (no overflow);
+  checked against FPE_Population: first order convergence at sigma 5 / 2 / 1 mV, feedback +-20 mV ms identical.
+  Example renamed to Examples/solver_tests/FPE_mini.py.
+- Grid fix in Nykamp_Model.py: np.arange(..., u_thr + dv / 2, dv) everywhere (u_thr + dv overshot by one point for
+  some u_inh / dv, e.g. -90 / 0.02 -> threshold at -54.98 mV). Izhikevich grids and the LIF studies of the textbook
+  (U_MIN = -100) are unchanged.
+- 2D initial-condition fix dropped (2D precision not worth its cost).
+
+7. CHAPTER CLOSED (2026-11-16)
+- dv study of the hardest case (two-node + FCT, dt 0.0025): dv 0.1 / 0.05 / 0.025 / 0.0125 mV -> 0.125 / 0.110 /
+  0.009 / 0.005 (241 / 437 / 749 / 1251 s). The 1D closure reproduces the converged network in all six cases; the
+  hardest case only costs resolution.
+- Textbook: sec:refdt:diag closed with the dv table; new section sec:fast "Models under ten seconds" (table tab:fast,
+  recommended model: two-node + FCT, dv 0.1, dt 0.05, ~3 s per population; six limitations); MPR section moved after it;
+  title/abstract/reading guide updated; "Note added" remarks at all places built on the Euler references or the
+  threshold event (sec:res:net, lownoise, measures, imp, fct, m2, dt2d, mpr); Siegert row 5 corrected (its -0.14 % was
+  the threshold grid bug, fixed: 1170.09 Hz); FPE_mini mentioned at the dt/dv^2 remark; scripts table completed.
+
+Restructuring (same day): the former section "Time step, reference, a two-node closure and the full 2D solution"
+is split into three sections (time step / reference; two-node closure, label sec:quad; 2D solution); "Compiled
+kernels are optional" moved into sec:res:solver. New table tab:closures (all closures, code strings, order,
+fields, closing assumption) after Concept c:korder. New Concept c:errmeas "Comparing bursting firing rates" at the
+start of sec:res. Peclet notation unified: kappa = h dv / D everywhere, criterion |kappa| <~ 2 (the low-noise
+figure axis shows kappa/2, labelled Pe). Textbook now 89 pages, compiles cleanly.

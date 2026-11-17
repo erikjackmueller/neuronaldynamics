@@ -1,0 +1,65 @@
+RECAP 2026-11-09: converged network references, FCT in the 2D solver, the hardest case resolved
+=================================================================================================
+(continues RECAP_2026-11-06.txt; textbook: new section 17 "The time step of the reference networks", label sec:refdt,
+notes added in section 15 and in the MPR table)
+
+1. MAIN RESULT
+--------------
+All IK network references (1 pop Monte Carlo and 3 pop networks) used Euler-Maruyama with MC_DT = 0.01 ms and spikes
+detected on the grid. They were converged in N but NOT in dt:
+- 3 pop, sigma = 1 mV, step: the post-stimulus volley of exc 2 (~118-135 ms) and the inhibitory bursts it triggered
+  are an Euler artefact. They shrink/disappear for smaller dt. The volleys of the first 100 ms move later by ~3 ms.
+- Euler converges very slowly: the burst times still move by 0.2-0.3 ms per halving of dt below 0.0025 ms; only at
+  dt = 0.0003125 ms does it agree with the converged solution (0.8 %).
+- Stochastic Heun with interpolated spike times (new, method='heun') is converged at dt = 0.01 ms (0.9-2.4 % between
+  dt = 0.01 ... 0.000625 ms, one outlier of 11 % at 0.0025 ms: a 0.6 ms shift of one burst).
+- 20 Hz sine, sigma = 1 mV: old reference 15 % off. 1 pop and sigma = 3.16 mV: old references 1.6-2.8 % off (fine).
+
+The 2D solver produced the (non-existent) event through the numerical diffusion of the SG flux in v. With FCT
+(new, flux_limiter='fct') or dv = 0.05 mV the event is gone.
+
+2. ERRORS AGAINST THE CONVERGED REFERENCES (Heun, dt 0.005 ms, 100k; textbook table tab:refdt)
+------------------------------------------------------------------------------------------------
+    case                    old ref   2nd mom FCT   two-node FCT   2D du2 no FCT   2D FCT
+    1 pop RS default          0.028       0.160         0.030          0.050        0.050
+    1 pop high rate           0.017       0.009         0.007          0.042        0.040
+    1 pop fast adaptation     0.016       0.011         0.011          0.030        0.029
+    3 pop step sigma 3.16     0.024       0.155         0.005          0.072        0.070
+    3 pop 20 Hz sigma 1       0.151       0.072         0.028          0.090        0.073
+    3 pop step sigma 1        0.512       0.122         0.124          0.378        0.048 (du 1), 0.090 (dv 0.05, du 2)
+- two-node closure + FCT within 3 % in 5 of 6 cases; in the hardest case 12 % = inhibitory bursts 0.8 ms early.
+- 2D + FCT converged in du (du 2 vs 1: 5 %) and dv (dv 0.1 vs 0.05 at du 2: 0.095 vs 0.090); best model in the
+  hardest case (4.9 %, burst times within 0.04 ms). It is the closure-free control.
+- FCT does not change the 2D solution for 1 pop at sigma = 2 mV; it helps where populations synchronise.
+- two-node closure on dv = 0.05 mV in the hardest case: 0.117 (dv 0.1: 0.124), inhibitory bursts still 0.6 ms early
+  (centroid 78.15 vs 78.77 ms): the remaining 12 % is closure error, the 2D solution gets the bursts right.
+- MIIND / refractory density (alternatives 4a, 4b of the last recap) are no longer needed for the threshold event.
+
+3. FILES (branch fpe-2d-fct-reference-dt)
+-----------------------------------------
+Model/Izhikevich_2D.py                     flux_limiter='fct' (Zalesak limiter per u line, numba + numpy)
+FPE_vs_IK_network.py                       ik_network(method='euler'|'heun'), module default MC_METHOD = 'euler'
+FPE_Izhikevich_resolution.py               monte_carlo with MC_METHOD 'euler'|'heun' (1 pop)
+FPE_2D_fct_3pop.py                         2D with/without FCT, hardest case; event measures (onset, centroid, counts),
+                                           cum_dist_ms, self-convergence; 'easy' mode for no-regression checks
+FPE_IK_reference_dt.py                     dt study of the network reference (Euler and Heun), 'figure' mode
+                                           -> reference_dt_convergence.png (textbook figure fig:refdt)
+FPE_reference_rebuild.py                   rebuild of all 6 references (Heun, dt 0.005, 100k) + errors old vs new
+Results: FPE_2D_fct_3pop/, FPE_IK_reference_dt/, FPE_reference_rebuild/ (not committed, as before)
+
+4. NEXT STEPS
+-------------
+1. (done) table tab:refdt complete; FPE_2D_fct_3pop.py easy / run1d modes.
+2. Remaining 1D error in the hardest case is closure error (dv = 0.05 checked). Next: compare the conditional moments
+   E[u|v], Var[u|v] and the u distribution at the reset of the two-node closure with the 2D solution (with FCT) around
+   the inhibitory bursts at 70-85 ms, to see which part of the closure delays/advances the bursts.
+3. Defaults: switch MC_METHOD to 'heun' in FPE_vs_IK_network.py / FPE_Izhikevich_resolution.py (would change every
+   reference when scripts are rerun) - decision pending.
+4. Cost statements (FPE vs networks: "1/2-1/40 of the network's time", work-precision plots) were made against Euler
+   networks with dt 0.01; a converged network needs Heun (~2x cost per step). Redo the timing comparison.
+5. The LIF references (sections 9-10, FPE_vs_LIF_timing.py, LIF.run_low_mem) also use Euler with threshold detection on
+   the grid. For LIF the missed-crossing error is O(sqrt(dt)) (Gobet 2000) and there is no fast blow-up to the peak, so
+   it may be worse than for IK: check the dt convergence of the LIF references the same way.
+6. Model/LIF.py run_low_mem: last column of v_rec stays 0 when (n_t - 1) % rec_every == 0 (loop stops at n_t - 2);
+   r[:, -1] is a copy of r[:, -2].
+7. Merge branch fpe-2d-fct-reference-dt into main.

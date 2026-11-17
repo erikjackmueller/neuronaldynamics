@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib
 import random
 from tqdm import tqdm
-from Model import Conductance_LIF
+from Model import LIF.Conductance_LIF
 from Model.Nykamp_Model import Nykamp_Model_1
 from Utils import compare_firing_rate
 matplotlib.use('TkAgg')
