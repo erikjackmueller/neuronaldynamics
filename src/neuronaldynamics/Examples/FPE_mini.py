@@ -19,8 +19,6 @@ Usage (from src/neuronaldynamics):  python Examples/FPE_mini.py
 """
 import sys
 from pathlib import Path
-from tabnanny import verbose
-
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
