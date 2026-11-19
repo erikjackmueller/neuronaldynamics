@@ -53,7 +53,7 @@ warnings.filterwarnings('ignore', message='.*non-interactive.*')
 warnings.filterwarnings('ignore', category=RuntimeWarning)
 
 HERE = Path(__file__).resolve().parent
-OUT_DIR = HERE / 'FPE_fct_closure_test'
+OUT_DIR = HERE / f'FPE_fct_closure_test{net.method_suffix()}'
 OUT_DIR.mkdir(exist_ok=True)
 IMP_DIR = HERE / f'FPE_Izhikevich_3pop_improvements{net.method_suffix()}'
 LOW_NOISE_DIR = HERE / f'FPE_Izhikevich_low_noise{net.method_suffix()}'

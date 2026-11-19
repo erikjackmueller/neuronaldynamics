@@ -370,6 +370,10 @@ class LIF_basic(Neuron_population):
 
         self.t = np.arange(0, self.T, self.dt)
         self.time_steps = self.t.shape[0]
+        if self.verbose > 0:
+            self.tqdm_disable = False
+        else:
+            self.tqdm_disable = True
         if isinstance(self.Iinj, np.ndarray):
             # TODO: repeat for no input and scalar input if needed
             voltage_noise = np.random.normal(0, 1, self.Iinj.shape)
@@ -502,7 +506,7 @@ class LIF_basic(Neuron_population):
         self.t_rec = self.t[::rec_every]
         v_rec = np.zeros((n_pop, n_rec, len(self.t_rec))) #  recorded voltage
 
-        for i in tqdm(range(n_t - 1), f'simulating network for {n_t - 1} time steps', disable=not self.verbose):
+        for i in tqdm(range(n_t - 1), f'simulating network for {n_t - 1} time steps', disable=self.tqdm_disable):
             # delayed population rates
             if coupled:
                 n_k = min(i + 1, len(kernel))

@@ -61,6 +61,7 @@ DV = 0.1
 # model: (kind, label, settings)
 MODELS = {f'ik_heun_{n // 1000}k': ('IK', f'IK Heun {n // 1000}k', dict(method='heun', n=n)) for n in N_LIST}
 MODELS['ik_euler_20k'] = ('IK', 'IK Euler 20k', dict(method='euler', n=20_000))
+SHOW_EULER = False  # also show the Euler-Maruyama network (old setting) in the work-precision figure
 for dt in [0.05, 0.01, 0.005]:
     MODELS[f'1d_twonode_fct_dt{dt:g}'] = ('1D', f'1D two-node FCT dt {dt:g}',
                                           dict(closure='conditional_quadrature', limiter='fct', dt=dt))
@@ -178,8 +179,8 @@ def analyze():
                 ax.annotate(r['model'].split('_')[-1].replace('dt', ''), (r['time'], r['err']), fontsize=6,
                             xytext=(3, -8), textcoords='offset points', color=styles[key]['color'])
         for key, name, model in [('variance', '1D variance (old), dt 0.05', '1d_variance_dt0.05'),
-                                 ('2d', '2D FCT du 2, dt 0.01', '2d_fct_du2_dt0.01'),
-                                 ('ik_euler_20k', 'IK Euler 20k, dt 0.01 (old)', 'ik_euler_20k')]:
+                                 ('2d', '2D FCT du 2, dt 0.01', '2d_fct_du2_dt0.01')] + \
+                                [('ik_euler_20k', 'IK Euler 20k, dt 0.01 (old)', 'ik_euler_20k')] * SHOW_EULER:
             m = [r for r in sel if r['model'] == model]
             ax.plot([r['time'] for r in m], [r['err'] for r in m], ls='none', **styles[key], label=name)
         t_ref = next(r['time'] for r in rows if r['case'] == case and r['model'] == 'ik_heun_100k_ref')

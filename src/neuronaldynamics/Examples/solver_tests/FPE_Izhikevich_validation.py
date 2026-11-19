@@ -7,7 +7,10 @@ simulation of N independent Izhikevich neurons with the same white noise (D = vo
   population, the onset transient agrees, the damped rate oscillations caused by spike synchronised adaptation are
   missed by the FPE
 
-Results are written to the folder FPE_Izhikevich next to this script:
+Monte Carlo integrator MC_METHOD: 'heun' (stochastic Heun with interpolated spike times, default) or 'euler'
+(Euler-Maruyama with spikes on the time grid, the old reference).
+
+Results are written to the folder FPE_Izhikevich_heun ('euler': FPE_Izhikevich) next to this script:
 - FPE_Izhikevich_validation.png/.pdf   rates and <u> of FPE and Monte Carlo
 """
 import os
@@ -18,9 +21,11 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/neuronaldynamics, for direct calls
 from Model.Nykamp_Model import FPE_Izhikevich
-matplotlib.use('TkAgg')
+SHOW = os.environ.get('SHOW_PLOTS', '1') == '1'  # SHOW_PLOTS=0: no window (e.g. in a batch run)
+matplotlib.use('TkAgg' if SHOW else 'Agg')
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'FPE_Izhikevich')
+MC_METHOD = 'heun'  # Monte Carlo integrator: 'heun' (stochastic Heun, interpolated spike times) or 'euler'
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'FPE_Izhikevich' + ('' if MC_METHOD == 'euler' else '_heun'))
 n_neurons = 40000
 
 # plot style as in FPE_vs_LIF_timing.py: FPE blue, reference (Monte Carlo) dark grey, light grid, no top / right spines
@@ -31,7 +36,8 @@ GRID_COLOR = '#e0dfdb'
 
 def monte_carlo(par, I, T, dt, N=n_neurons, seed=0):
     """
-    Euler-Maruyama simulation of N Izhikevich neurons, returns the population rate (1/ms) and <u> (pA)
+    simulation of N Izhikevich neurons (integrator MC_METHOD, see mc_step), returns the population rate (1/ms) and
+    <u> (pA)
     """
     rng = np.random.default_rng(seed)
     D = par['voltage_sigma'] ** 2 / par['tau_noise']
@@ -41,16 +47,39 @@ def monte_carlo(par, I, T, dt, N=n_neurons, seed=0):
     r = np.zeros(Nt)
     u_mean = np.zeros(Nt)
     for i in range(1, Nt):
-        dvdt = (par['k'] * (v - par['v_r']) * (v - par['v_t']) - u + I[i]) / par['C']
-        dudt = par['a'] * (par['b'] * (v - par['v_r']) - u)
-        v = v + dt * dvdt + np.sqrt(2 * D * dt) * rng.standard_normal(N)
-        u = u + dt * dudt
-        spikes = v >= par['v_peak']
-        v[spikes] = par['c']
-        u[spikes] += par['d']
+        v, u, spikes = mc_step(par, v, u, I[i], dt, np.sqrt(2 * D * dt) * rng.standard_normal(N))
         r[i] = spikes.sum() / (N * dt)
         u_mean[i] = u.mean()
     return r, u_mean
+
+
+def mc_step(par, v, u, i_in, dt, xi):
+    """
+    one step of N Izhikevich neurons with the noise increments xi, MC_METHOD 'heun' (stochastic Heun with
+    interpolated spike times, as FPE_vs_IK_network.ik_network) or 'euler' (Euler-Maruyama, spikes on the time grid)
+    :return: v, u, spikes (bool per neuron)
+    """
+    f_v = lambda v, u: (par['k'] * (v - par['v_r']) * (v - par['v_t']) - u + i_in) / par['C']
+    f_u = lambda v, u: par['a'] * (par['b'] * (v - par['v_r']) - u)
+    dvdt, dudt = f_v(v, u), f_u(v, u)
+    if MC_METHOD == 'euler':
+        v, u = v + dt * dvdt + xi, u + dt * dudt
+        spikes = v >= par['v_peak']
+        v[spikes] = par['c']
+        u[spikes] += par['d']
+        return v, u, spikes
+    v_p = np.minimum(v + dt * dvdt + xi, 10 * par['v_peak'])
+    u_p = u + dt * dudt
+    v_new = v + 0.5 * dt * (dvdt + f_v(v_p, u_p)) + xi
+    u_new = u + 0.5 * dt * (dudt + f_u(v_p, u_p))
+    spikes = v_new >= par['v_peak']
+    # crossing time t_n + theta dt (linear interpolation), reset there and drift over the rest of the step
+    theta = np.clip((par['v_peak'] - v) / np.maximum(v_new - v, 1e-12), 0., 1.)
+    u_s = u + theta * (u_new - u) + par['d']
+    rest = (1. - theta) * dt
+    v_s = par['c'] + rest * f_v(par['c'], u_s)
+    u_s = u_s + rest * f_u(par['c'], u_s)
+    return np.where(spikes, v_s, v_new), np.where(spikes, u_s, u_new), spikes
 
 
 def smooth(x, ms, dt):
@@ -107,4 +136,5 @@ if __name__ == '__main__':
     for ext in ['png', 'pdf']:
         fig.savefig(os.path.join(OUT_DIR, f'FPE_Izhikevich_validation.{ext}'), dpi=300)
     print(f'saved results to {OUT_DIR}')
-    plt.show()
+    if SHOW:
+        plt.show()

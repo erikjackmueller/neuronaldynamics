@@ -696,6 +696,305 @@ def _fct_correct_np(fields, g_plus, g_minus, h, w, D, dt_eff, alpha, A, Rp, Rm, 
         alpha[idx] = 0.0
 
 
+def _iz_simulate_set_batch(cfg, i_ext):
+    """
+    time loop of FPE_Population.simulate_set() for Izhikevich neurons: n_sim independent simulations of the coupled
+    populations, i_ext (n_sim, n_pop, Nt) in pA. All n_sim * n_pop populations (blocks) are advanced together: the
+    elementwise operations of a time step (input, extrapolation of the adaptation fields, closures, extra fluxes,
+    moments of the jumps, updates of <u>) act on (n_blocks, Nx) arrays at once, the implicit solves, the FCT limiter
+    and the moments are done block by block with the kernels of simulate() (same arithmetic as simulate())
+    :param cfg: settings and per population parameters from FPE_Population._simulate_set_izhikevich
+    :return: dict with r, u_mean, v_mean, sigma_u2, var_u, u2_mean (n_blocks, Nt), p, q, q2 (n_blocks, Nx, Nt_p) or
+     None, n_clipped, n_fallback
+    """
+    if cfg['numba']:
+        density_step, q_step, q2_step = _iz_density_step, _iz_q_step, _iz_q2_step
+        moments, fct_correct, moment_step = _iz_moments, _fct_correct, _iz_moment_step
+    else:
+        density_step, q_step, q2_step = _iz_density_step_np, _iz_q_step_np, _iz_q2_step_np
+        moments, fct_correct, moment_step = _iz_moments_np, _fct_correct_np, _iz_moment_step_np
+    n_sim, n_pop, Nt = i_ext.shape
+    B = n_sim * n_pop  # block j of simulation s: s * n_pop + j
+    v, h, w, dt = cfg['v'], cfg['h'], cfg['w'], cfg['dt']
+    Nx = v.shape[0]
+    conditional, with_variance, second_moment, quadrature = cfg['flags']
+    harmonic, fct, n_corrector, floor_rel = cfg['harmonic'], cfg['fct'], cfg['n_corrector'], cfg['u_cond_floor']
+    save_p, p_save_every = cfg['save_p'], cfg['p_save_every']
+    W, kernel = cfg['connectivity_matrix'], cfg['delay_kernel']
+    n_k_max = len(kernel)
+
+    # parameters per block
+    C_m, k_iz, v_r, a, b, d, tau_noise = [np.tile(cfg[name], n_sim) for name in
+                                          ['C_m', 'k_iz', 'v_r', 'a', 'b', 'd', 'tau_noise']]
+    reset_idx = np.tile(cfg['reset_idx'], n_sim)
+    quad = np.tile(cfg['quad_mean'], (n_sim, 1))
+    sigma = np.tile(cfg['sigma'], (n_sim, 1))
+    i_ext = i_ext.reshape(B, Nt)
+
+    Nt_p = len(range(0, Nt, p_save_every)) if save_p == 'all' else 1
+    p = np.zeros((B, Nx, Nt_p))
+    q = np.zeros((B, Nx, Nt_p)) if conditional else None
+    q2 = np.zeros((B, Nx, Nt_p)) if second_moment else None
+    r, u_mean, v_mean, sigma_u2, var_u, u2_mean = [np.zeros((B, Nt)) for _ in range(6)]
+
+    # initial conditions (the same for every simulation)
+    p_last = np.tile(cfg['p0'], (n_sim, 1))
+    u0 = np.tile(cfg['u_mean0'], n_sim)
+    v_mean[:, 0] = np.tile(cfg['v_mean0'], n_sim)
+    u_mean[:, 0] = u0
+    u2_mean[:, 0] = u0**2
+    q_last = u0[:, np.newaxis] * p_last
+    q2_last = u0[:, np.newaxis]**2 * p_last
+    q3_last = u0[:, np.newaxis]**3 * p_last
+    u_cond_last = np.repeat(u0[:, np.newaxis], Nx, axis=1)
+    c3_last, s2_last = np.zeros((B, Nx)), np.zeros((B, Nx))
+    p_prev = q_prev = q2_prev = q3_prev = u_cond_prev = c3_prev = s2_prev = None
+    p[:, :, 0] = p_last
+    if conditional:
+        q[:, :, 0] = q_last
+    if second_moment:
+        q2[:, :, 0] = q2_last
+    n_clipped = 0
+    n_fallback = 0
+
+    # work arrays: per block where the step of the density leaves them set for the adaptation fields, else shared
+    n_fields = 1 + conditional + second_moment + quadrature
+    g_plus, g_minus, lower, upper = [np.zeros((B, Nx - 1)) for _ in range(4)]
+    main, s_vec = np.zeros((B, Nx)), np.zeros((B, Nx))
+    main_q, b_rhs, b_q, y, z, cp = [np.zeros(Nx) for _ in range(6)]
+    fct_work = [np.zeros(Nx - 1), np.zeros(Nx - 1), np.zeros(Nx), np.zeros(Nx), np.zeros(Nx - 1)]
+    fct_low = np.empty((n_fields, Nx))
+    s2_zero = np.zeros((B, Nx))
+    blocks = range(B)
+
+    for i in tqdm(range(1, Nt), f'simulating {n_sim} simulations of {n_pop} Izhikevich populations '
+                                f'({"" if n_sim == 1 else "set, "}{B} blocks) for {Nt - 1} time steps',
+                  disable=cfg['tqdm_disable']):
+        # delayed recurrent input from the rates of the previous steps, coupling within every simulation
+        n_k = min(i + 1, n_k_max)
+        r_conv = r[:, i - n_k + 1:i + 1][:, ::-1] @ kernel[:n_k] * dt
+        i_total = i_ext[:, i] + (r_conv.reshape(n_sim, n_pop) @ W).reshape(-1)
+        D = np.maximum(sigma[:, i]**2 / tau_noise, 1e-10)
+        has_prev = p_prev is not None
+        p_old, q_old, q2_old, q3_old = p_last, q_last, q2_last, q3_last
+
+        # predictor (pass 0): adaptation in the drift and in the extra fluxes linearly extrapolated to t_i,
+        # corrector passes: the adaptation fields of the previous pass at t_i (as in simulate())
+        for it in range(1 + n_corrector):
+            if it == 0:
+                u_scalar = 2 * u_mean[:, i - 1] - u_mean[:, i - 2] if i >= 2 else u_mean[:, i - 1].copy()
+                has_u_prev = u_cond_prev is not None
+                u_src_last = u_cond_last
+                u_src_prev = u_cond_prev if has_u_prev else u_cond_last
+                u_ex = 2 * u_cond_last - u_cond_prev if has_u_prev else u_cond_last
+                if with_variance:
+                    s2_star = 2 * sigma_u2[:, i - 1] - sigma_u2[:, i - 2] if i >= 2 else sigma_u2[:, i - 1]
+                    s2_ex = np.repeat(np.maximum(s2_star, 0.)[:, np.newaxis], Nx, axis=1)
+                elif second_moment:
+                    s2_ex = np.maximum(2 * s2_last - s2_prev, 0.) if s2_prev is not None else s2_last
+                else:
+                    s2_ex = s2_zero
+                if quadrature:
+                    c3_ex = 2 * c3_last - c3_prev if c3_prev is not None else c3_last
+            else:
+                u_scalar = u_mean[:, i].copy()
+                has_u_prev = False
+                if conditional:
+                    u_src_last = u_src_prev = u_ex = u_cond
+                if with_variance:
+                    s2_ex = np.repeat(sigma_u2[:, i, np.newaxis], Nx, axis=1)
+                elif second_moment:
+                    s2_ex = s2_new
+                if quadrature:
+                    c3_ex = c3_new
+
+            # density: BDF2 with backward Euler fallback, reinjection by Sherman-Morrison (per block)
+            p_new = np.empty((B, Nx))
+            alpha_t, coef, mass = np.empty(B), np.empty(B), np.empty(B)
+            for bk in blocks:
+                r[bk, i], alpha_t[bk], fallback, clipped, coef[bk], mass[bk], v_mean[bk, i] = density_step(
+                    p_old[bk], p_prev[bk] if has_prev else p_old[bk], has_prev, v, h, w, quad[bk], k_iz[bk], C_m[bk],
+                    i_total[bk], D[bk], dt, conditional, u_scalar[bk], u_src_last[bk], u_src_prev[bk], has_u_prev,
+                    reset_idx[bk], harmonic, g_plus[bk], g_minus[bk], main[bk], lower[bk], upper[bk], b_rhs,
+                    s_vec[bk], y, z, cp, p_new[bk])
+                n_fallback += fallback
+                n_clipped += clipped
+            use_bdf2 = alpha_t == 1.5
+            u_old1 = u_mean[:, i - 1]
+            b_u = np.where(use_bdf2, 2 * u_old1 - 0.5 * u_mean[:, i - 2], u_old1)
+
+            if conditional:
+                # q = p E[u | v], with the extra flux -Var(u | v) p / C for the variance closures
+                q_new = np.empty((B, Nx))
+                q_out = np.empty(B)
+                for bk in blocks:
+                    q_out[bk] = q_step(q_old[bk], q_prev[bk] if use_bdf2[bk] else q_old[bk], use_bdf2[bk], p_new[bk],
+                                       v, h, w, main[bk], lower[bk], upper[bk], s_vec[bk], dt, a[bk], b[bk], v_r[bk],
+                                       d[bk], r[bk, i], coef[bk], s2_ex[bk], C_m[bk], with_variance or second_moment,
+                                       main_q, b_q, y, z, cp, q_new[bk])
+                if second_moment and not quadrature:
+                    q2_new = np.empty((B, Nx))
+                    for bk in blocks:
+                        q2_step(q2_old[bk], q2_prev[bk] if use_bdf2[bk] else q2_old[bk], use_bdf2[bk], q_new[bk],
+                                p_new[bk], u_ex[bk], s2_ex[bk], v, h, w, main[bk], lower[bk], upper[bk], s_vec[bk], dt,
+                                a[bk], b[bk], v_r[bk], d[bk], r[bk, i], q_out[bk], coef[bk], C_m[bk], main_q, b_q, y,
+                                z, cp, q2_new[bk])
+                elif quadrature:
+                    # moments 2 and 3, two-node closure c4 = s2^2 + c3^2 / s2 (see simulate())
+                    N_rate = r[:, i]
+                    c3_lim = QUADRATURE_MAX_SKEWNESS * s2_ex**1.5
+                    c3_ex = np.clip(c3_ex, -c3_lim, c3_lim)
+                    c4_ex = s2_ex**2 + np.where(s2_ex > 0, c3_ex**2 / np.maximum(s2_ex, 1e-300), 0.)
+                    C_col = C_m[:, np.newaxis]
+                    extra2 = -(2 * u_ex * s2_ex + c3_ex) * p_new / C_col
+                    jump2 = 2 * d * q_out + d**2 * N_rate
+                    q2_new = np.empty((B, Nx))
+                    q2_out = np.empty(B)
+                    for bk in blocks:
+                        q2_out[bk] = moment_step(
+                            q2_old[bk], q2_prev[bk] if use_bdf2[bk] else q2_old[bk], use_bdf2[bk], q_new[bk],
+                            extra2[bk], v, h, w, main[bk], lower[bk], upper[bk], s_vec[bk], dt, 2 * a[bk], b[bk],
+                            v_r[bk], coef[bk], jump2[bk], main_q, b_q, y, z, cp, q2_new[bk])
+                    extra3 = -(3 * u_ex**2 * s2_ex + 3 * u_ex * c3_ex + c4_ex) * p_new / C_col
+                    jump3 = 3 * d * q2_out + 3 * d**2 * q_out + d**3 * N_rate
+                    q3_new = np.empty((B, Nx))
+                    for bk in blocks:
+                        moment_step(q3_old[bk], q3_prev[bk] if use_bdf2[bk] else q3_old[bk], use_bdf2[bk], q2_new[bk],
+                                    extra3[bk], v, h, w, main[bk], lower[bk], upper[bk], s_vec[bk], dt, 3 * a[bk],
+                                    b[bk], v_r[bk], coef[bk], jump3[bk], main_q, b_q, y, z, cp, q3_new[bk])
+
+            if fct:
+                # flux-corrected transport, the same limiter for all fields of a block
+                fields = np.empty((B, n_fields, Nx))
+                fields[:, 0] = p_new
+                if conditional:
+                    fields[:, 1] = q_new
+                if second_moment:
+                    fields[:, 2] = q2_new
+                if quadrature:
+                    fields[:, 3] = q3_new
+                for bk in blocks:
+                    fct_correct(fields[bk], g_plus[bk], g_minus[bk], h, w, D[bk], dt / alpha_t[bk], *fct_work, fct_low,
+                                floor_rel)
+                p_new = fields[:, 0].copy()
+                if conditional:
+                    q_new = fields[:, 1].copy()
+                if second_moment:
+                    q2_new = fields[:, 2].copy()
+                if quadrature:
+                    q3_new = fields[:, 3].copy()
+                v_mean[:, i] = np.sum(w * v * p_new, axis=1) / mass
+
+            if not conditional:
+                # mean adaptation, BDF2 (implicit in <u>, uses the new <v> and r)
+                u_mean[:, i] = (b_u + dt * (a * b * (v_mean[:, i] - v_r) + d * r[:, i])) / (alpha_t + dt * a)
+            else:
+                u_cond, s2_new = np.empty((B, Nx)), np.empty((B, Nx))
+                var_cond_mean, uv, u2_field, sig_field = np.empty(B), np.empty(B), np.empty(B), np.empty(B)
+                q2_src = q2_new if second_moment else q_new
+                for bk in blocks:
+                    mass[bk], v_mean[bk, i], u_mean[bk, i], var_cond_mean[bk], uv[bk], u2_field[bk], sig_field[bk] = \
+                        moments(p_new[bk], q_new[bk], q2_src[bk], second_moment, v, w, v_r[bk], floor_rel, u_cond[bk],
+                                s2_new[bk])
+                if with_variance:
+                    # exact equation of <u^2> (BDF2, implicit in <u^2>), Var(u | v) = sigma_u2 for all v
+                    u2_old1 = u2_mean[:, i - 1]
+                    b_u2 = np.where(use_bdf2, 2 * u2_old1 - 0.5 * u2_mean[:, i - 2], u2_old1)
+                    u2_mean[:, i] = (b_u2 + dt * (2 * a * b * uv + 2 * d * q_out + d**2 * r[:, i])) / \
+                                    (alpha_t + 2 * dt * a)
+                    sigma_u2[:, i] = np.maximum(u2_mean[:, i] - u_mean[:, i]**2 - var_cond_mean, 0.)
+                    var_u[:, i] = sigma_u2[:, i] + var_cond_mean
+                elif second_moment:
+                    u2_mean[:, i] = u2_field
+                    sigma_u2[:, i] = sig_field
+                    var_u[:, i] = u2_field - u_mean[:, i]**2
+                    if quadrature:
+                        # third central moment E[(u - m)^3 | v] (regularized like E[u | v]), bounded skewness
+                        floor = floor_rel * p_new.max(axis=1)[:, np.newaxis]
+                        u3_mean = np.sum(w * q3_new, axis=1) / mass
+                        e2 = (q2_new + floor * u2_field[:, np.newaxis]) / (p_new + floor)
+                        e3 = (q3_new + floor * u3_mean[:, np.newaxis]) / (p_new + floor)
+                        c3_new = e3 - 3 * u_cond * e2 + 2 * u_cond**3
+                        c3_max = QUADRATURE_MAX_SKEWNESS * s2_new**1.5
+                        c3_new = np.clip(c3_new, -c3_max, c3_max)
+                else:
+                    var_u[:, i] = var_cond_mean
+                    u2_mean[:, i] = var_u[:, i] + u_mean[:, i]**2
+
+        # state for the next time step
+        save_now = save_p == 'all' and i % p_save_every == 0
+        if conditional:
+            if second_moment:
+                q2_prev, q2_last = q2_old, q2_new
+                s2_prev, s2_last = s2_last, s2_new
+                if save_now:
+                    q2[:, :, i // p_save_every] = q2_new
+            if quadrature:
+                q3_prev, q3_last = q3_old, q3_new
+                c3_prev, c3_last = c3_last, c3_new
+            q_prev, q_last = q_old, q_new
+            u_cond_prev, u_cond_last = u_cond_last, u_cond
+            if save_now:
+                q[:, :, i // p_save_every] = q_new
+        p_prev, p_last = p_old, p_new
+        if save_now:
+            p[:, :, i // p_save_every] = p_new
+
+    if save_p == 'end':
+        p[:, :, 0] = p_last
+        if conditional:
+            q[:, :, 0] = q_last
+        if second_moment:
+            q2[:, :, 0] = q2_last
+    elif save_p == 'none':
+        p = q = q2 = None
+    return dict(r=r, u_mean=u_mean, v_mean=v_mean, sigma_u2=sigma_u2, var_u=var_u, u2_mean=u2_mean, p=p, q=q, q2=q2,
+                n_clipped=n_clipped, n_fallback=n_fallback)
+
+
+def external_input(input_function, input_function_idx, voltage_sigma, t, n_pop, static_noise=True):
+    """
+    External input of FPE_Population and FPE_mini (same parameter dict for both), one row per population
+
+    input_function: callable of t or array, (Nt,): input into the populations input_function_idx (the others get 0),
+        (n_pop, Nt): its own input for every population (input_function_idx is ignored)
+    voltage_sigma: noise (mV), scalar, one value per population or (n_pop, Nt); static_noise=False: voltage_sigma times
+        the input current (old behaviour of FPE_Population)
+    :return: i_ext (n_pop, Nt) in the unit of input_function, sigma (n_pop, Nt) in mV
+    """
+    Nt = len(t)
+    x = np.asarray(input_function(t) if callable(input_function) else input_function, dtype=float)
+    i_ext = np.zeros((n_pop, Nt))
+    if x.ndim == 2:
+        assert x.shape == (n_pop, Nt), f'input_function has to be of shape {(Nt,)} or {(n_pop, Nt)}, got {x.shape}'
+        i_ext[:] = x
+    else:
+        assert x.shape[0] == Nt, f'Dimension missmatch between input with dimension {x.shape[0]} and simulation ' \
+                                 f'time with dimension {Nt}!'
+        i_ext[input_function_idx] = x
+    sigma = np.asarray(voltage_sigma, dtype=float)
+    if sigma.ndim == 2:
+        assert sigma.shape == (n_pop, Nt), f'voltage_sigma has to be of shape {(n_pop, Nt)}'
+        return i_ext, sigma
+    if sigma.size not in [1, n_pop]:
+        raise ValueError(f'voltage_sigma has to be a scalar, have one value per population or be of shape '
+                         f'{(n_pop, Nt)}')
+    sigma = sigma.reshape(-1, 1)
+    return i_ext, (sigma * i_ext if not static_noise else np.broadcast_to(sigma, (n_pop, Nt)).copy())
+
+
+def initial_density(v, u_rest, offset, sigma, weight):
+    """
+    Initial density of FPE_Population and FPE_mini: Gaussian around u_rest + offset (width sigma) plus weight times a
+    uniform density above u_rest, p = 0 at both ends of the grid, integral 1 (uniform grid v)
+    """
+    gauss = norm.pdf(v, v[np.where(v > u_rest + offset)[0][0] - 1], sigma)
+    uniform = (v >= u_rest).astype(float)
+    p = gauss / gauss.sum() + weight * uniform / uniform.sum()
+    p[0] = p[-1] = 0
+    return p / (p.sum() * (v[1] - v[0]))
+
+
 class FPE_Population:
     """
     Fokker-Planck (diffusion approximation) population model of leaky integrate-and-fire neurons with stochastic
@@ -757,8 +1056,9 @@ class FPE_Population:
         self.input_function = np.zeros((int(self.T/self.dt)))
         self.input_function_idx = [0, 0]
         self.population_type = ['exc']
-        self.voltage_sigma = 1
+        self.voltage_sigma = 1  # noise (mV): scalar, one value per population or (n_populations, Nt)
         self.static_noise = True
+        self.c_mem = 1.1e-10  # membrane capacitance (F), 0.11 nF cell total c_mem on average
         self.init_pdf_offset = 0
         self.init_pdf_sigma = 1
         self.init_pdf_weight = 0
@@ -800,8 +1100,9 @@ class FPE_Population:
                 raise NotImplementedError(f'adaptation_closure {self.adaptation_closure} not implemented! Please chose '
                                           f'from {ADAPTATION_CLOSURES}')
 
+        if self.soma_model == 'LIF' and np.size(self.tau_mem) == 1:
+            self.tau_mem = [float(np.ravel(self.tau_mem)[0])] * self.n_populations  # one value per population
         if not 'g_leak' in parameters:
-            self.c_mem = 1.1e-10  # (0.11 nF cell total c_mem on average)
             # compute g_leak from tau and capacitance
             self.g_leak = self.c_mem / (np.array(self.tau_mem) * 1e-3)  # (conversion from ms to s for tau_mem)
 
@@ -857,20 +1158,9 @@ class FPE_Population:
         dv = self.dv
         n_pop = self.n_populations
 
-        # external input current and noise
-        self.i_ext = np.zeros([n_pop, Nt])
-        if not callable(self.input_function) and type(self.input_function) == np.ndarray:
-            assert self.input_function.shape[0] == Nt, f'Dimension missmatch between input with dimension'\
-                                                       f' {self.input_function.shape[0]} and simulation' \
-                                                       f' time with dimension {Nt}!'
-            input_function_copy = self.input_function
-            self.input_function = lambda x: input_function_copy  # hotfix that just returns the array for any input
-        self.i_ext[self.input_function_idx] = self.input_function(self.t)
-        if not isinstance(self.voltage_sigma, np.ndarray):
-            if self.static_noise:
-                self.voltage_sigma = np.tile(self.voltage_sigma, (n_pop, Nt))
-            else:
-                self.voltage_sigma = self.voltage_sigma * self.i_ext
+        # external input current (A) and noise (mV), one row per population, see external_input
+        self.i_ext, self.voltage_sigma = external_input(self.input_function, self.input_function_idx,
+                                                        self.voltage_sigma, self.t, n_pop, self.static_noise)
         # injected voltage in mV
         v_ext = self.i_ext / np.array(self.g_leak)[:n_pop, np.newaxis] * 1e3
 
@@ -892,19 +1182,9 @@ class FPE_Population:
         # INITIAL CONDITIONS
         ################################################################################################################
         for j in range(n_pop):
-            # Gaussian component
-            v0 = self.v[np.where(self.v > self.u_rest + self.init_pdf_offset)[0][0] - 1]
-            init_dist_1 = norm.pdf(self.v, v0, self.init_pdf_sigma)
-            init_dist_1 /= init_dist_1.sum()
-            # uniform component above u_rest
-            init_dist_2 = np.ones_like(self.v)
-            init_dist_2[self.v < self.u_rest] = 0
-            init_dist_2 /= init_dist_2.sum()
-            init_dist = init_dist_1 + (self.init_pdf_weight * init_dist_2)
-            init_dist[0] = init_dist[-1] = 0
-            # density: integral over v is 1
-            init_dist /= init_dist.sum() * dv
-            p[j, :, 0] = init_dist
+            # Gaussian around u_rest + init_pdf_offset plus a uniform part above u_rest, integral 1
+            p[j, :, 0] = initial_density(self.v, self.u_rest, self.init_pdf_offset, self.init_pdf_sigma,
+                                         self.init_pdf_weight)
 
         p_last_step = [p[j, :, 0].copy() for j in range(n_pop)]
         p_prev_step = [None] * n_pop
@@ -1020,9 +1300,12 @@ class FPE_Population:
         - batch_size=1, n_jobs>1: joblib only, every simulation solved on its own
         - batch_size=None, n_jobs>1: simulations split evenly over the processes, one matrix per process
         n_jobs=-1 uses all cores
+
+        Izhikevich neurons (soma_model='izhikevich' / 'IK'): see _simulate_set_izhikevich, a set of independent
+        simulations of the coupled populations (all closures, flux_limiter 'fct' and n_corrector as in simulate())
         """
         if self.soma_model == 'izhikevich':
-            raise NotImplementedError('simulate_set() is not implemented for Izhikevich neurons, use simulate()')
+            return self._simulate_set_izhikevich()
         if self.flux_limiter != 'none':
             raise NotImplementedError("flux_limiter 'fct' is implemented in simulate() only, not in simulate_set()")
         self.t = np.arange(0, self.T, self.dt)
@@ -1308,7 +1591,7 @@ class FPE_Population:
                 n_plots = len(plot_idxs)
 
             if plot_combined:
-                fig = plt.figure(figsize=(10, 4.25*n_plots))
+                fig = plt.figure(figsize=(10, 3.75*n_plots))
                 for i_plot, plot_idx in enumerate(plot_idxs):
                     plot_loc_1 = int(2*i_plot + 1)
                     plot_loc_2 = int(2 * i_plot + 2)
@@ -1504,25 +1787,30 @@ class FPE_Population:
         ab[2, :-1] = lower
         return scipy.linalg.solve_banded((1, 1), ab, b, check_finite=False)
 
-    def _simulate_izhikevich(self):
+    def _closure_flags(self):
         """
-        simulate() for soma_model='izhikevich' (FPE_Izhikevich), see the docstring of FPE_Izhikevich for the model, the
-        adaptation closures and the discretization
+        (conditional, with_variance, second_moment, quadrature) of the adaptation closure: conditional closures evolve
+        q = p E[u | v]; q2 = p E[u^2 | v] is a field for 'conditional_second_moment' (Gaussian third moment) and
+        'conditional_quadrature' (also q3 = p E[u^3 | v], two-node closure of the fourth moment)
+        """
+        conditional = self.adaptation_closure in ['conditional', 'conditional_variance', 'conditional_second_moment',
+                                                  'conditional_quadrature']
+        quadrature = self.adaptation_closure == 'conditional_quadrature'
+        second_moment = self.adaptation_closure == 'conditional_second_moment' or quadrature
+        return conditional, self.adaptation_closure == 'conditional_variance', second_moment, quadrature
+
+    def _izhikevich_setup(self):
+        """
+        common part of simulate() and simulate_set() for Izhikevich neurons: time and voltage grid (sets self.t,
+        self.v, self.v_cell_width, self.v_control_volume, self.v_reset_idx), noise, reset points, cell averaged drift
+        and the initial conditions of every population
+        :return: dict with the parameters per population (C_m, k_iz, v_r, v_t, a, b, c, d, tau_noise), v, h, w,
+         sigma (n_pop, Nt), reset_idx, quad_mean (n_pop, Nx - 1), p0 (n_pop, Nx), v_mean0, u_mean0 (n_pop)
         """
         self.t = np.arange(0, self.T, self.dt)
         Nt = self.t.shape[0]
-        dt = self.dt
         n_pop = self.n_populations
         C_m, k_iz, v_r, v_t, a, b, c, d, tau_noise = [self._per_population(name) for name in IZHIKEVICH_PER_POPULATION]
-        conditional = self.adaptation_closure in ['conditional', 'conditional_variance', 'conditional_second_moment',
-                                                  'conditional_quadrature']
-        with_variance = self.adaptation_closure == 'conditional_variance'
-        # q2 = p E[u^2 | v] as field: 'conditional_second_moment' (Gaussian third moment) and 'conditional_quadrature'
-        # (also q3 = p E[u^3 | v], two-node closure of the fourth moment)
-        quadrature = self.adaptation_closure == 'conditional_quadrature'
-        second_moment = self.adaptation_closure == 'conditional_second_moment' or quadrature
-        harmonic = self.flux_scheme == 'harmonic'
-        fct = self.flux_limiter == 'fct'
 
         # voltage grid: uniform (spacing dv) or non-uniform ('refined': spacing dv in v_fine_range, growing to
         # dv_coarse outside, see izhikevich_grid; or the grid points as array). Finite volumes: cells [v_i, v_{i+1}]
@@ -1550,15 +1838,6 @@ class FPE_Population:
         self.v_cell_width = h
         self.v_control_volume = w
 
-        # external input current in pA
-        self.i_ext = np.zeros([n_pop, Nt])
-        if not callable(self.input_function) and type(self.input_function) == np.ndarray:
-            assert self.input_function.shape[0] == Nt, f'Dimension missmatch between input with dimension'\
-                                                       f' {self.input_function.shape[0]} and simulation' \
-                                                       f' time with dimension {Nt}!'
-            input_function_copy = self.input_function
-            self.input_function = lambda x: input_function_copy
-        self.i_ext[self.input_function_idx] = self.input_function(self.t)
         sigma = np.asarray(self.voltage_sigma, dtype=float)
         if sigma.ndim == 2:
             assert sigma.shape == (n_pop, Nt), f'voltage_sigma has to be of shape {(n_pop, Nt)}'
@@ -1580,7 +1859,48 @@ class FPE_Population:
 
         # cell average of (v - v_r)(v - v_t) over [v_i, v_{i+1}]: exact SG potential differences for the quadratic drift
         v_mid = 0.5 * (v[1:] + v[:-1])
-        quad_mean = [(v_mid - v_r[j]) * (v_mid - v_t[j]) + h**2 / 12 for j in range(n_pop)]
+        quad_mean = np.array([(v_mid - v_r[j]) * (v_mid - v_t[j]) + h**2 / 12 for j in range(n_pop)])
+
+        # initial conditions: gaussian around v_r (plus init_pdf_weight times a uniform part above v_r), all neurons
+        # with the same u (adaptation at rest unless u_init is given)
+        p0 = np.zeros((n_pop, Nx))
+        v_mean0 = np.zeros(n_pop)
+        for j in range(n_pop):
+            v0 = v[np.where(v > v_r[j] + self.init_pdf_offset)[0][0] - 1]
+            init_dist_1 = norm.pdf(v, v0, self.init_pdf_sigma)
+            init_dist_1 /= np.sum(w * init_dist_1)
+            init_dist_2 = np.ones_like(v)
+            init_dist_2[v < v_r[j]] = 0
+            init_dist_2 /= np.sum(w * init_dist_2)
+            init_dist = init_dist_1 + (self.init_pdf_weight * init_dist_2)
+            init_dist[0] = init_dist[-1] = 0
+            init_dist /= np.sum(w * init_dist)
+            p0[j] = init_dist
+            v_mean0[j] = np.sum(w * v * init_dist)
+        u_mean0 = b * (v_mean0 - v_r) if self.u_init is None else self._per_population('u_init')
+        return dict(C_m=C_m, k_iz=k_iz, v_r=v_r, v_t=v_t, a=a, b=b, c=c, d=d, tau_noise=tau_noise, v=v, h=h, w=w,
+                    sigma=sigma, reset_idx=np.array(reset_idx), quad_mean=quad_mean, p0=p0, v_mean0=v_mean0,
+                    u_mean0=u_mean0)
+
+    def _simulate_izhikevich(self):
+        """
+        simulate() for soma_model='izhikevich' (FPE_Izhikevich), see the docstring of FPE_Izhikevich for the model, the
+        adaptation closures and the discretization
+        """
+        st = self._izhikevich_setup()
+        C_m, k_iz, v_r, v_t, a, b, c, d, tau_noise = [st[name] for name in ['C_m', 'k_iz', 'v_r', 'v_t', 'a', 'b', 'c',
+                                                                            'd', 'tau_noise']]
+        v, h, w, sigma, reset_idx, quad_mean = st['v'], st['h'], st['w'], st['sigma'], st['reset_idx'], st['quad_mean']
+        Nt = self.t.shape[0]
+        Nx = v.shape[0]
+        dt = self.dt
+        n_pop = self.n_populations
+        conditional, with_variance, second_moment, quadrature = self._closure_flags()
+        harmonic = self.flux_scheme == 'harmonic'
+        fct = self.flux_limiter == 'fct'
+
+        # external input current in pA, (Nt,) into the populations input_function_idx or (n_pop, Nt)
+        self.i_ext = external_input(self.input_function, self.input_function_idx, 0., self.t, n_pop)[0]
 
         self.t_p = self.t[::self.p_save_every] if self.save_p == 'all' else self.t[:1]
         p = np.zeros((n_pop, Nx, len(self.t_p)))
@@ -1600,22 +1920,9 @@ class FPE_Population:
         ################################################################################################################
         # INITIAL CONDITIONS
         ################################################################################################################
-        for j in range(n_pop):
-            v0 = v[np.where(v > v_r[j] + self.init_pdf_offset)[0][0] - 1]
-            init_dist_1 = norm.pdf(v, v0, self.init_pdf_sigma)
-            init_dist_1 /= np.sum(w * init_dist_1)
-            init_dist_2 = np.ones_like(v)
-            init_dist_2[v < v_r[j]] = 0
-            init_dist_2 /= np.sum(w * init_dist_2)
-            init_dist = init_dist_1 + (self.init_pdf_weight * init_dist_2)
-            init_dist[0] = init_dist[-1] = 0
-            init_dist /= np.sum(w * init_dist)
-            p[j, :, 0] = init_dist
-            v_mean[j, 0] = np.sum(w * v * init_dist)
-        if self.u_init is None:
-            u_mean[:, 0] = b * (v_mean[:, 0] - v_r)
-        else:
-            u_mean[:, 0] = self._per_population('u_init')
+        p[:, :, 0] = st['p0']
+        v_mean[:, 0] = st['v_mean0']
+        u_mean[:, 0] = st['u_mean0']
         # all neurons start with the same u: E[u | v] = <u>, no variance
         u2_mean[:, 0] = u_mean[:, 0]**2
 
@@ -1886,6 +2193,101 @@ class FPE_Population:
         self.save_sim_results(r=r, p=p, p_plot=p)
         self.simulation_done = True
 
+    def _simulate_set_izhikevich(self):
+        """
+        simulate_set() for Izhikevich neurons: n_sim independent simulations of the n_pop coupled populations (same
+        parameters, connectivity_matrix, noise and grid, different input currents), all n_sim * n_pop populations are
+        advanced together in one time loop (_iz_simulate_set_batch): the elementwise operations of a step act on all
+        populations at once, the implicit solves, FCT and moments use the kernels of simulate() per population, so a
+        single simulation (n_sim = 1) gives the same result as simulate().
+
+        input_function (pA): callable or (Nt,) array (one simulation, as in simulate()), (n_sim, Nt) (input into the
+        populations input_function_idx) or (n_sim, n_pop, Nt) (input into every population)
+        batch_size, n_jobs: as for LIF neurons, batches of simulations distributed over joblib processes
+
+        Results: r, u_mean, v_mean (and sigma_u2, var_u, u2_mean for the conditional closures) of shape
+        (n_sim, n_pop, Nt), p, q, q2 of shape (n_sim, n_pop, Nx, Nt_p); the hdf5 file holds them as n_sim * n_pop
+        populations (simulation s, population j at index s * n_pop + j)
+        """
+        st = self._izhikevich_setup()
+        Nt, n_pop = self.t.shape[0], self.n_populations
+        Nx = self.v.shape[0]
+        idx = self.input_function_idx
+
+        # input currents (n_sim, n_pop, Nt)
+        if callable(self.input_function):
+            i_set = np.zeros((1, n_pop, Nt))
+            i_set[0, idx] = self.input_function(self.t)
+        else:
+            x = np.asarray(self.input_function, dtype=float)
+            x = x[np.newaxis] if x.ndim == 1 else x
+            if x.ndim == 2:
+                i_set = np.zeros((x.shape[0], n_pop, Nt))
+                i_set[:, idx] = x[:, np.newaxis, :]
+            elif x.ndim == 3 and x.shape[1] == n_pop:
+                i_set = x.copy()
+            else:
+                raise ValueError(f'input_function has to be callable or of shape (Nt,), (n_sim, Nt) or '
+                                 f'(n_sim, {n_pop}, Nt), not {x.shape}')
+        assert i_set.shape[-1] == Nt, f'Dimension missmatch between input with dimension {i_set.shape[-1]} and ' \
+                                      f'simulation time with dimension {Nt}!'
+        n_sim = i_set.shape[0]
+        self.n_simulations = n_sim
+        self.i_ext = i_set
+
+        cfg = dict(st, dt=self.dt, connectivity_matrix=np.asarray(self.connectivity_matrix, dtype=float),
+                   delay_kernel=self.delay_kernel, flags=self._closure_flags(), harmonic=self.flux_scheme == 'harmonic',
+                   fct=self.flux_limiter == 'fct', n_corrector=int(self.n_corrector), u_cond_floor=self.u_cond_floor,
+                   save_p=self.save_p, p_save_every=self.p_save_every, numba=self._numba_active(),
+                   tqdm_disable=self.tqdm_disable)
+
+        # batches of simulations, distributed over n_jobs processes
+        n_jobs = os.cpu_count() if self.n_jobs == -1 else max(int(self.n_jobs), 1)
+        batch_size = self.batch_size if self.batch_size is not None else int(np.ceil(n_sim / n_jobs))
+        batches = [np.arange(k, min(k + batch_size, n_sim)) for k in range(0, n_sim, batch_size)]
+        if n_jobs == 1:
+            results = [_iz_simulate_set_batch(cfg, i_set[bt]) for bt in batches]
+        else:
+            from joblib import Parallel, delayed
+            results = Parallel(n_jobs=n_jobs)(delayed(_iz_simulate_set_batch)(dict(cfg, tqdm_disable=True), i_set[bt])
+                                              for bt in batches)
+
+        def collect(name, shape):
+            if results[0][name] is None:
+                return None
+            return np.concatenate([res[name] for res in results]).reshape(n_sim, n_pop, *shape)
+
+        self.r, self.u_mean, self.v_mean = [collect(name, (Nt,)) for name in ['r', 'u_mean', 'v_mean']]
+        conditional = cfg['flags'][0]
+        self.sigma_u2, self.var_u, self.u2_mean = [collect(name, (Nt,)) if conditional else None
+                                                   for name in ['sigma_u2', 'var_u', 'u2_mean']]
+        Nt_p = results[0]['p'].shape[-1] if results[0]['p'] is not None else 0
+        self.p, self.q, self.q2 = [collect(name, (Nx, Nt_p)) for name in ['p', 'q', 'q2']]
+        self.t_p = {'all': self.t[::self.p_save_every], 'end': self.t[-1:], 'none': None}[self.save_p]
+        self.n_clipped = sum(res['n_clipped'] for res in results)
+        self.n_fallback = sum(res['n_fallback'] for res in results)
+        if self.verbose > 0 and self.n_clipped > 0:
+            print(f'negative p values clipped in {self.n_clipped} time steps (summed over populations)')
+        if self.verbose > 0 and self.n_fallback > 0:
+            print(f'{self.n_fallback} time steps repeated with backward Euler (negative p with BDF2)')
+
+        # hdf5 file: the n_sim * n_pop populations in the format of save_sim_results
+        flat = lambda x: None if x is None else x.reshape(n_sim * n_pop, *x.shape[2:])
+        with h5py.File(self.name + '.hdf5', 'w') as h5file:
+            h5file.create_dataset('t', data=self.t)
+            h5file.create_dataset('v', data=self.v)
+            h5file.create_dataset('r', data=flat(self.r))
+            h5file.create_dataset('in', data=flat(self.i_ext))
+            if self.p is not None:
+                h5file.create_dataset('rho', data=flat(self.p))
+                h5file.create_dataset('rho_plot', data=flat(self.p))
+                h5file.create_dataset('t_rho', data=self.t_p)
+            h5file.create_dataset('p_types', data=list(self.population_type) * n_sim)
+            for name in ['u_mean', 'v_mean', 'q', 'sigma_u2', 'var_u', 'u2_mean']:
+                if getattr(self, name) is not None:
+                    h5file.create_dataset(name, data=flat(getattr(self, name)))
+        self.simulation_done = True
+
     def _numba_active(self):
         """True if the numba kernels are used (use_numba=True and numba installed), warns once otherwise"""
         if self.use_numba and not NUMBA_AVAILABLE:
@@ -1991,30 +2393,33 @@ class FPE_Izhikevich(FPE_Population):
 
 class FPE_mini:
     """
-    Minimal Fokker-Planck (population density) model of one population of leaky integrate-and-fire neurons, solved with
-    the original structure preserving scheme of
+    Minimal Fokker-Planck (population density) model of coupled populations of leaky integrate-and-fire neurons, solved
+    with the original structure preserving scheme of
 
         J. Hu, J.-G. Liu, Y. Xie and Z. Zhou. A structure preserving numerical scheme for Fokker-Planck equations of
         neuron networks: numerical analysis and exploration. Journal of Computational Physics 433:110195, 2021
 
     (building on J.-G. Liu, L. Wang and Z. Zhou, Mathematics of Computation 87(311):1165-1189, 2018), in the
     formulation of the first Hu-2021 solver of Nykamp_Model_1: Maxwellian M and its harmonic mean M_harm as values, the
-    matrix written out from them and solved with a sparse solver. Educational version: one population, backward Euler,
-    nothing optimised. FPE_Population is the revised solver (Bernoulli flux, BDF2, implicit reinjection, FCT, networks).
+    matrix written out from them and solved with a sparse solver. Educational version: backward Euler, nothing
+    optimised. FPE_Population is the revised solver (Bernoulli flux, BDF2, implicit reinjection, FCT, Izhikevich).
 
-    Model:
-        tau dV = (u_rest + mu(t) - V) dt + sigma sqrt(2 tau) dW,     V >= u_thr: spike, V -> u_reset
+    Model of population j = 0 ... n_pop - 1:
+        tau_j dV = (u_rest + mu_j(t) - V) dt + sigma_j(t) sqrt(2 tau_j) dW,     V >= u_thr: spike, V -> u_reset
 
-        dp/dt = -dJ/dv,    J = h(v, t) p - D dp/dv,    h = (u_rest + mu(t) - v) / tau,    D = sigma^2 / tau
+        dp_j/dt = -dJ_j/dv,    J_j = h_j(v, t) p_j - D_j dp_j/dv,    h_j = (u_rest + mu_j(t) - v) / tau_j,
+        D_j = sigma_j^2 / tau_j
 
-    with p(u_min) = p(u_thr) = 0, the firing rate r(t) = J(u_thr, t) (1/ms) and the reinjection of r at u_reset. The
-    input mu(t) (mV) is the input current divided by the leak conductance plus the optional self-feedback,
+    with p_j(u_inh) = p_j(u_thr) = 0, the firing rate r_j(t) = J_j(u_thr, t) (1/ms) and the reinjection of r_j at
+    u_reset. The input mu_j(t) (mV) is the external current of population j divided by its leak conductance plus the
+    delayed rates of all populations (as in FPE_Population),
 
-        mu(t) = I(t) / g_leak + weights * (alpha * r)(t),    g_leak = c_mem / tau,
+        mu_j(t) = I_j(t) / g_leak_j + sum_k W[k, j] (alpha * r_k)(t),    g_leak_j = c_mem / tau_j,
 
-    alpha: kernel with n_alpha = 9, tau_alpha = 1/3 ms (mean delay 3 ms, integral 1), weights in mV ms (> 0 excitatory).
+    W = connectivity_matrix in mV ms (from k to j, < 0 inhibitory), alpha: kernel with n_alpha = 9, tau_alpha = 1/3 ms
+    (mean delay 3 ms, integral 1).
 
-    Discretisation on the uniform grid v_i = u_min + i dv, i = 0 ... N - 1 (v_{N-1} = u_thr):
+    Discretisation on the uniform grid v_i = u_inh + i dv, i = 0 ... N - 1 (v_{N-1} = u_thr), for every population:
     1. Potential and Maxwellian: h = -D dU/dv with U(v) = (v / 2 - u_rest - mu) v / (D tau), M = exp(-U). Then
        J = -D M d/dv (p / M): the flux vanishes exactly where p / M is constant (the equilibrium). U is only defined up to
        a constant, which cancels in all ratios of M; it is shifted to min U = 0 so that 0 < M <= 1 (without the shift,
@@ -2035,103 +2440,117 @@ class FPE_mini:
            r^{n+1} = (D / dv) M_harm_{N-3/2} / M_{N-2} p^{n+1}_{N-2},
        i.e. exactly the mass that left through the threshold in the step, divided by dt.
     5. Reinjection after the step: r^{n+1} dt is added at the grid point u_reset (density r dt / dv), so the mass stays
-       1 (up to what leaves at u_min, negligible on a grid that is wide enough).
+       1 (up to what leaves at u_inh, negligible on a grid that is wide enough).
     First order in dt and dv (backward Euler, reinjection split from the step).
 
-    Parameters (keyword arguments; units ms, mV, A, F):
+    Parameters: the parameter dict of FPE_Population (it can be passed to both without changes, keys that FPE_mini does
+    not use are ignored); units ms, mV, A, F:
         T, dt, dv: simulated time, time step, grid spacing
-        tau, u_rest, u_reset, u_thr, u_min: membrane time constant, resting / reset potential, threshold, lower end of
-            the grid (u_reset has to be a grid point)
-        sigma: noise (mV), c_mem: membrane capacitance (F)
-        weights: self-feedback weight (mV ms), 0: no feedback
-        init_sigma: width (mV) of the initial Gaussian density around u_rest
-        save_every: store p every save_every-th time step (0: only the final density)
+        population_type: list of the populations (its length is the number of populations)
+        tau_mem: membrane time constant, scalar or one value per population; c_mem: membrane capacitance
+        u_rest, u_reset, u_thr, u_inh: resting / reset potential, threshold, lower end of the grid (u_reset has to be a
+            grid point)
+        input_function, input_function_idx, voltage_sigma, static_noise: external input current and noise, scalar,
+            per population or per population and time step, see external_input
+        connectivity_matrix: W (n_pop, n_pop) in mV ms; delay_kernel_parameters: n_alpha, tau_alpha of the kernel
+        init_pdf_offset, init_pdf_sigma, init_pdf_weight: initial density, see initial_density
+        save_p, p_save_every: 'all': p every p_save_every-th time step, otherwise only the final density
 
-    Results after simulate(input_current):
-        t (ms), v (mV), r (firing rate, 1/ms), mu (total input, mV), p (densities (n_saved, N), 1/mV), t_p (their times)
+    Results after simulate(), in the format of FPE_Population (written to name.hdf5 by save_sim_results, so that
+    FPE_Population(parameters, name=name).plot() plots them):
+        t (ms), v (mV), r (n_pop, Nt) firing rates (1/ms), mu (n_pop, Nt) total input (mV), i_ext (n_pop, Nt) input
+        current (A), sigma (n_pop, Nt) noise (mV), p (n_pop, N, n_saved) densities (1/mV), t_p their times
     """
 
     U_MAX = 700.        # cap of the shifted potential, exp(-700) ~ 1e-304 is still a normal float
+    DEFAULTS = dict(T=100., dt=0.01, dv=0.01, population_type=['exc'], tau_mem=20., c_mem=1.1e-10, u_rest=-70.,
+                    u_reset=-70., u_thr=-55., u_inh=-75., input_function=None, input_function_idx=[0], voltage_sigma=1.,
+                    static_noise=True, connectivity_matrix=0., delay_kernel_parameters={'n_alpha': 9, 'tau_alpha': 1/3},
+                    init_pdf_offset=0., init_pdf_sigma=1., init_pdf_weight=0., save_p='all', p_save_every=1, verbose=False)
 
-    def __init__(self, T=100., dt=0.01, dv=0.01, tau=20., u_rest=-70., u_reset=-70., u_thr=-55., u_min=-75.,
-                 sigma=5., c_mem=1.1e-10, weights=0., init_sigma=1., save_every=0):
-        self.T, self.dt, self.dv = T, dt, dv
-        self.tau, self.u_rest, self.u_reset, self.u_thr, self.u_min = tau, u_rest, u_reset, u_thr, u_min
-        self.sigma, self.c_mem, self.weights = sigma, c_mem, weights
-        self.init_sigma, self.save_every = init_sigma, save_every
+    def __init__(self, parameters={}, name='FPE_mini'):
+        self.__dict__.update(self.DEFAULTS)
+        self.__dict__.update(parameters)
+        self.name, self.n_populations = name, len(self.population_type)
 
-    def simulate(self, input_current):
+    def simulate(self):
         """
-        :param input_current: input current (A), array with one value per time step (len(arange(0, T, dt))) or a
-            function of t (ms)
-        :return: firing rate r (1/ms), one value per time step
+        :return: firing rates r (1/ms), (n_pop, Nt)
         """
-        dt, dv, tau = self.dt, self.dv, self.tau
+        dt, dv, n_pop = self.dt, self.dv, self.n_populations
         t = np.arange(0, self.T, dt)
-        v = np.arange(self.u_min, self.u_thr + dv / 2, dv)
+        v = np.arange(self.u_inh, self.u_thr + dv / 2, dv)
         N = len(v)
-        reset_idx = int(np.argmin(np.abs(v - self.u_reset)))
-        if not np.isclose(v[reset_idx], self.u_reset):
+        reset_idx = np.where(np.isclose(v, self.u_reset))[0]
+        if reset_idx.size == 0:
             raise ValueError(f'u_reset = {self.u_reset} is not a grid point')
-        i_in = input_current(t) if callable(input_current) else np.asarray(input_current, dtype=float)
-        mu_ext = i_in / (self.c_mem / (tau * 1e-3)) * 1e3                  # mean of I / g_leak in mV
-        D = self.sigma**2 / tau
-        c = D * dt / dv**2                                                  # grid constant
+        tau = np.broadcast_to(np.asarray(self.tau_mem, dtype=float).reshape(-1), (n_pop,))
+        W = np.broadcast_to(np.asarray(self.connectivity_matrix, dtype=float), (n_pop, n_pop))
+        # external input current (A) and noise (mV) per population, input in mV: I / g_leak
+        i_in = np.zeros(len(t)) if self.input_function is None else self.input_function
+        i_ext, sigma = external_input(i_in, self.input_function_idx, self.voltage_sigma, t, n_pop, self.static_noise)
+        mu_ext = i_ext / (self.c_mem / (tau[:, None] * 1e-3)) * 1e3
 
-        # alpha kernel of the feedback, normalised to integral 1 on the time grid
+        # alpha kernel of the coupling, normalised to integral 1 on the time grid
+        n_a, tau_a = self.delay_kernel_parameters['n_alpha'], self.delay_kernel_parameters['tau_alpha']
         t_a = t[t < 10]
-        kernel = np.exp(-t_a / (1 / 3)) / ((1 / 3) * scipy.special.factorial(8)) * (t_a / (1 / 3))**8
+        kernel = np.exp(-t_a / tau_a) / (tau_a * scipy.special.factorial(n_a - 1)) * (t_a / tau_a)**(n_a - 1)
         kernel /= np.trapz(kernel, dx=dt)
 
-        # initial condition: Gaussian around u_rest, p = 0 at both ends, integral of p = 1
-        v0 = v[np.where(v > self.u_rest)[0][0] - 1]
-        p = norm.pdf(v, v0, self.init_sigma)
-        p[0] = p[-1] = 0
-        p /= p.sum() * dv
-
-        r = np.zeros(len(t))
-        mu = np.zeros(len(t))
+        # initial condition of every population: Gaussian around u_rest, p = 0 at both ends, integral of p = 1
+        p = np.array([initial_density(v, self.u_rest, self.init_pdf_offset, self.init_pdf_sigma,
+                                      self.init_pdf_weight)] * n_pop)
+        r, mu = np.zeros((n_pop, len(t))), np.zeros((n_pop, len(t)))
+        save_all = self.save_p == 'all'
         saved, t_saved = [p.copy()], [t[0]]
         main, lower, upper = np.zeros(N), np.zeros(N - 1), np.zeros(N - 1)
-        for n in range(1, len(t)):
-            # input of the step, with the feedback from the rates up to the previous step
-            # kernel approximation by dot product,
+        for n in tqdm(range(1, len(t)), 'solving fpe', disable=not self.verbose):
+            # input of the step, with the delayed rates of all populations up to the previous step (dot product with
+            # the kernel)
             n_k = min(n + 1, len(kernel))
-            fb = np.dot(r[n - n_k + 1:n + 1][::-1], kernel[:n_k]) * dt if self.weights != 0 else 0.0
-            mu[n] = mu_ext[n] + self.weights * fb  # update input by feedback, can be written differently
+            r_conv = r[:, n - n_k + 1:n + 1][:, ::-1] @ kernel[:n_k] * dt
+            mu[:, n] = mu_ext[:, n] + W.T @ r_conv
 
-            # potential and Maxwellian (U shifted to min U = 0)
-            U = (0.5 * v - self.u_rest - mu[n]) * v / (D * tau)
-            M = np.exp(-np.minimum(U - U.min(), self.U_MAX)) # set bound on shifted U to avoid underflow
-            # harmonic mean at the interfaces
-            M_harm = 2 / (1 / M[:-1] + 1 / M[1:])
+            for j in range(n_pop):
+                D = max(sigma[j, n]**2 / tau[j], 1e-10)                    # minimal D against division by zero
+                c = D * dt / dv**2                                          # grid constant
+                # potential and Maxwellian (U shifted to min U = 0, capped at U_MAX against underflow)
+                U = (0.5 * v - self.u_rest - mu[j, n]) * v / (D * tau[j])
+                M = np.exp(-np.minimum(U - U.min(), self.U_MAX))
+                M_harm = 2 / (1 / M[:-1] + 1 / M[1:])                       # harmonic mean at the interfaces
 
-            # backward Euler matrix: interior rows i = 1 ... N - 2, first and last row: p = 0
-            main[1:-1] = 1 + c * (M_harm[:-1] + M_harm[1:]) / M[1:-1]
-            lower[:-1] = -c * M_harm[:-1] / M[:-2]                         # A[i, i-1], i = 1 ... N - 2
-            upper[1:] = -c * M_harm[1:] / M[2:]                            # A[i, i+1], i = 1 ... N - 2
-            main[0] = main[-1] = 1
-            # sparse matrix for fast computation (not as fast as banded matrix solver)
-            # A.todense() gives the matrix as readable array
-            A = scipy.sparse.diags([main, lower, upper], offsets=[0, -1, 1], shape=(N, N), format='csr')
-            b = p.copy()
-            b[0] = b[-1] = 0
-            p = scipy.sparse.linalg.spsolve(A, b)
+                # backward Euler matrix: interior rows i = 1 ... N - 2, first and last row: p = 0
+                main[1:-1] = 1 + c * (M_harm[:-1] + M_harm[1:]) / M[1:-1]
+                lower[:-1] = -c * M_harm[:-1] / M[:-2]                     # A[i, i-1], i = 1 ... N - 2
+                upper[1:] = -c * M_harm[1:] / M[2:]                        # A[i, i+1], i = 1 ... N - 2
+                main[0] = main[-1] = 1
+                # sparse matrix (A.todense() gives the matrix as readable array)
+                A = scipy.sparse.diags([main, lower, upper], offsets=[0, -1, 1], shape=(N, N), format='csr')
+                b = p[j].copy()
+                b[0] = b[-1] = 0
+                p[j] = scipy.sparse.linalg.spsolve(A, b)
 
-            # firing rate/ spike density: flux through the last interface
-            r[n] = (D / dv) * M_harm[-1] / M[-2] * p[-2]
-            # reinjection at u_reset
-            p[reset_idx] += r[n] * dt / dv
+                r[j, n] = (D / dv) * M_harm[-1] / M[-2] * p[j, -2]       # flux through the last interface
+                p[j, reset_idx[0]] += r[j, n] * dt / dv                    # reinjection at u_reset
 
-            if self.save_every and n % self.save_every == 0:
+            if save_all and n % self.p_save_every == 0:
                 saved.append(p.copy())
                 t_saved.append(t[n])
-        if not self.save_every:
+        if not save_all:
             saved, t_saved = [p.copy()], [t[-1]]
 
-        self.t, self.v, self.r, self.mu = t, v, r, mu
-        self.p, self.t_p = np.array(saved), np.array(t_saved)
+        self.t, self.v, self.r, self.mu, self.i_ext, self.sigma = t, v, r, mu, i_ext, sigma
+        self.p, self.t_p = np.moveaxis(np.array(saved), 0, -1), np.array(t_saved)
+        self.save_sim_results()
         return r
+
+    def save_sim_results(self):
+        # format of FPE_Population.save_sim_results
+        with h5py.File(self.name + '.hdf5', 'w') as h5file:
+            for key, x in dict(t=self.t, v=self.v, r=self.r, rho=self.p, rho_plot=self.p, t_rho=self.t_p,
+                               p_types=self.population_type).items():
+                h5file.create_dataset(key, data=x)
+            h5file.create_dataset('in', data=self.i_ext)
 
 
 class Nykamp_Model:

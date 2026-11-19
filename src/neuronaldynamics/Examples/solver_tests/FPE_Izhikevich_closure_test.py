@@ -48,9 +48,12 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # src/neuronaldynamics, for direct calls
 from Model.Nykamp_Model import FPE_Izhikevich, IZHIKEVICH_DEFAULTS
-matplotlib.use('TkAgg')
+SHOW = os.environ.get('SHOW_PLOTS', '1') == '1'  # SHOW_PLOTS=0: no window (e.g. in a batch run)
+matplotlib.use('TkAgg' if SHOW else 'Agg')
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'FPE_Izhikevich_closures')
+MC_METHOD = 'heun'  # Monte Carlo integrator: 'heun' (stochastic Heun, interpolated spike times) or 'euler'
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       'FPE_Izhikevich_closures' + ('' if MC_METHOD == 'euler' else '_heun'))
 
 ########################################################################################################################
 # SETTINGS
@@ -98,7 +101,7 @@ def input_current(experiment, key):
 
 def monte_carlo(par, t, I, stats_window, N=N_NEURONS, seed=0):
     """
-    Euler-Maruyama simulation of N Izhikevich neurons
+    simulation of N Izhikevich neurons (integrator MC_METHOD, see mc_step)
     :param stats_window: (t_start, t_end) in ms in which corr(u, v) over the neurons is averaged
     :return: rate (1/ms), <u> (pA), Var(u) (pA^2, every 10th time step, linearly interpolated), corr(u, v)
     """
@@ -111,13 +114,7 @@ def monte_carlo(par, t, I, stats_window, N=N_NEURONS, seed=0):
     var_idx, var_u = [0], [0.]
     corr = []
     for i in range(1, len(t)):
-        dvdt = (par['k'] * (v - par['v_r']) * (v - par['v_t']) - u + I[i]) / par['C']
-        dudt = par['a'] * (par['b'] * (v - par['v_r']) - u)
-        v = v + dt * dvdt + np.sqrt(2 * D * dt) * rng.standard_normal(N)
-        u = u + dt * dudt
-        spikes = v >= par['v_peak']
-        v[spikes] = par['c']
-        u[spikes] += par['d']
+        v, u, spikes = mc_step(par, v, u, I[i], dt, np.sqrt(2 * D * dt) * rng.standard_normal(N))
         r[i] = spikes.sum() / (N * dt)
         u_mean[i] = u.mean()
         if i % 10 == 0:
@@ -127,6 +124,35 @@ def monte_carlo(par, t, I, stats_window, N=N_NEURONS, seed=0):
             corr.append(np.corrcoef(u, v)[0, 1])
     var_u = np.interp(np.arange(len(t)), var_idx, var_u)
     return r, u_mean, var_u, float(np.mean(corr)) if corr else np.nan
+
+
+def mc_step(par, v, u, i_in, dt, xi):
+    """
+    one step of N Izhikevich neurons with the noise increments xi, MC_METHOD 'heun' (stochastic Heun with
+    interpolated spike times, as FPE_vs_IK_network.ik_network) or 'euler' (Euler-Maruyama, spikes on the time grid)
+    :return: v, u, spikes (bool per neuron)
+    """
+    f_v = lambda v, u: (par['k'] * (v - par['v_r']) * (v - par['v_t']) - u + i_in) / par['C']
+    f_u = lambda v, u: par['a'] * (par['b'] * (v - par['v_r']) - u)
+    dvdt, dudt = f_v(v, u), f_u(v, u)
+    if MC_METHOD == 'euler':
+        v, u = v + dt * dvdt + xi, u + dt * dudt
+        spikes = v >= par['v_peak']
+        v[spikes] = par['c']
+        u[spikes] += par['d']
+        return v, u, spikes
+    v_p = np.minimum(v + dt * dvdt + xi, 10 * par['v_peak'])
+    u_p = u + dt * dudt
+    v_new = v + 0.5 * dt * (dvdt + f_v(v_p, u_p)) + xi
+    u_new = u + 0.5 * dt * (dudt + f_u(v_p, u_p))
+    spikes = v_new >= par['v_peak']
+    # crossing time t_n + theta dt (linear interpolation), reset there and drift over the rest of the step
+    theta = np.clip((par['v_peak'] - v) / np.maximum(v_new - v, 1e-12), 0., 1.)
+    u_s = u + theta * (u_new - u) + par['d']
+    rest = (1. - theta) * dt
+    v_s = par['c'] + rest * f_v(par['c'], u_s)
+    u_s = u_s + rest * f_u(par['c'], u_s)
+    return np.where(spikes, v_s, v_new), np.where(spikes, u_s, u_new), spikes
 
 
 def smooth(x, ms):
@@ -380,4 +406,5 @@ if __name__ == '__main__':
         plot_experiment(e, results, times, corrs)
     save_table_pdf(latex_table(rows, experiments), 'closure_test_table')
     print(f'saved results to {OUT_DIR}')
-    plt.show()
+    if SHOW:
+        plt.show()

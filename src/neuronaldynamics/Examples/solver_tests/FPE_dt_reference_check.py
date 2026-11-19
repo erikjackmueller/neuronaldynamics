@@ -21,6 +21,13 @@ Outputs in Examples/solver_tests/FPE_dt_reference_check:
     rates_<input>.png               rates of the reference networks and of the finest FPE runs
     dt_reference_table.csv, dt_reference_table.tex / .pdf
 
+Heun (net.MC_METHOD = 'heun', default): the FPE runs are compared with the converged references of
+FPE_reference_rebuild.py (stochastic Heun, dt = 0.005 ms, 100k neurons per population) instead of the Euler-Maruyama
+networks, check 2 is not repeated (the Heun references are converged in N and dt). The FPE rates of the Euler run
+(FPE_dt_reference_check/dt_reference_rates.npz) do not depend on the reference and are reused; configurations that are
+missing there (the two-node closure) are simulated. Outputs in Examples/solver_tests/FPE_dt_reference_check_heun:
+dt_reference_table.csv, dt_reference_rates.npz, dt_convergence.png/.pdf
+
 Usage (from src/neuronaldynamics):  python Examples/solver_tests/FPE_dt_reference_check.py
 """
 import os
@@ -61,11 +68,14 @@ INPUTS = ['step', 'sine20Hz']
 DTS = [0.05, 0.025, 0.01, 0.005, 0.0025]
 CONFIGS = {'var_sg': ('cond.+var., SG', 'conditional_variance', 'none'),
            'm2_fct': ('2nd moment, FCT', 'conditional_second_moment', 'fct')}
+CONFIGS_HEUN = dict(CONFIGS, quad_fct=('two-node, FCT', 'conditional_quadrature', 'fct'))
+EULER_DIR = HERE / 'FPE_dt_reference_check'  # FPE rates of the Euler run, reused in main_heun
+HEUN_CASES = {'step': '3pop_step_1', 'sine20Hz': '3pop_sine20Hz_1'}  # cases of FPE_reference_rebuild.py
 CORRECTORS = [0, 1]
 # reference networks: (neurons per population, seed); (100_000, 100_000) is loaded from the improvements test
 NEW_REFS = [(100_000, 100_001), (100_000, 100_002), (200_000, 200_000)]
 BASE_REF = (100_000, 100_000)
-COLORS = {'var_sg': '#2a9d6b', 'm2_fct': '#d6612a'}
+COLORS = {'var_sg': '#2a9d6b', 'm2_fct': '#d6612a', 'quad_fct': '#2a78d6'}
 
 
 def run(task):
@@ -77,7 +87,7 @@ def run(task):
         return dict(task=task, time=time.perf_counter() - t0, rb=net.binned_rate(r, net.MC_DT))
     _, kind, config, dt, n_corr = task
     imp.set_input(kind)
-    _, closure, limiter = CONFIGS[config]
+    _, closure, limiter = CONFIGS_HEUN[config]
     pars = dict(soma_model='IK', T=net.T, dt=dt, dv=DV, population_type=net.SETUPS['3pop'][0],
                 connectivity_matrix=net.SETUPS['3pop'][2], voltage_sigma=SIGMA, input_function=net.input_current,
                 input_function_idx=[0], init_pdf_sigma=1.0, save_p='none', tqdm_disable=True,
@@ -234,5 +244,78 @@ def main():
     print(f'results saved in {OUT_DIR}')
 
 
+def main_heun():
+    """
+    FPE runs against the converged Heun references (FPE_reference_rebuild.py), see the docstring of the module
+    """
+    import FPE_reference_rebuild as rebuild
+    refs = {kind: np.load(rebuild.ref_file(case, rebuild.REF_DT, rebuild.N_REF))['rb'] for kind, case in HEUN_CASES.items()}
+    tasks = [('FPE', kind, c, dt, nc) for kind in INPUTS for c in CONFIGS_HEUN for dt in DTS for nc in CORRECTORS]
+    key = lambda task: '_'.join(str(v) for v in task)
+    results = {}
+    if (EULER_DIR / 'dt_reference_rates.npz').exists():
+        old = np.load(EULER_DIR / 'dt_reference_rates.npz')
+        with open(EULER_DIR / 'dt_reference_table.csv') as f:
+            old_time = {('FPE', r['input'], r['config'], float(r['dt']), int(r['n_corrector'])): float(r['time'])
+                        for r in csv.DictReader(f) if r['config'] != 'IK'}
+        results = {task: dict(task=task, rb=old[key(task)], time=old_time.get(task, np.nan), n_fallback=np.nan)
+                   for task in tasks if key(task) in old.files}
+    todo = sorted([task for task in tasks if task not in results], key=lambda x: x[3] / (1 + x[4]))  # expensive first
+    print(f'{len(results)} FPE runs from {EULER_DIR.name}, {len(todo)} to simulate')
+    if todo:
+        run(todo[-1][:3] + (0.05, 0))  # compile the numba kernels
+        t_start = time.perf_counter()
+        with Pool(N_PROCESSES) as pool:
+            for q, res in enumerate(pool.imap_unordered(run, todo), start=1):
+                results[res['task']] = res
+                print(f'[{q}/{len(todo)}] {res["task"]}: {res["time"]:.1f} s', flush=True)
+        print(f'total wall time {time.perf_counter() - t_start:.0f} s')
+
+    rows = []
+    for task in tasks:
+        _, kind, c, dt, nc = task
+        res = results[task]
+        m = imp.measures(res['rb'], refs[kind])
+        rows.append(dict(input=kind, model=CONFIGS_HEUN[c][0], config=c, dt=dt, n_corrector=nc, time=res['time'],
+                         err=m['rel_l2_smooth'], err_raw=m['rel_l2'], count_err=m['count_err'],
+                         n_fallback=res['n_fallback'], **{f'pop{j}': m[f'rel_l2_smooth_pop{j}'] for j in range(3)}))
+    fields = ['input', 'model', 'config', 'dt', 'n_corrector', 'time', 'err', 'err_raw', 'count_err', 'n_fallback',
+              'pop0', 'pop1', 'pop2']
+    with open(OUT_DIR / 'dt_reference_table.csv', 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(rows)
+    np.savez(OUT_DIR / 'dt_reference_rates.npz', **{key(task): res['rb'] for task, res in results.items()})
+
+    print(f"\nsmoothed rel. L2 error against the Heun reference (dt = {rebuild.REF_DT} ms, {rebuild.N_REF:,} neurons)")
+    print(f"{'input':9s} {'model':16s} {'corr':>4s} " + ' '.join(f'{dt:>7}' for dt in DTS))
+    for kind in INPUTS:
+        for c in CONFIGS_HEUN:
+            for nc in CORRECTORS:
+                errs = [next(r['err'] for r in rows if (r['input'], r['config'], r['dt'], r['n_corrector']) ==
+                             (kind, c, dt, nc)) for dt in DTS]
+                print(f"{kind:9s} {CONFIGS_HEUN[c][0]:16s} {nc:4d} " + ' '.join(f'{e:7.3f}' for e in errs))
+
+    fig, axs = plt.subplots(1, len(INPUTS), figsize=(5.5 * len(INPUTS), 3.8), sharey=True, constrained_layout=True)
+    for ax, kind in zip(axs, INPUTS):
+        for c in CONFIGS_HEUN:
+            for nc, ls in zip(CORRECTORS, ['-', '--']):
+                sel = sorted([r for r in rows if r['input'] == kind and r['config'] == c and r['n_corrector'] == nc],
+                             key=lambda r: r['dt'])
+                ax.plot([r['dt'] for r in sel], [r['err'] for r in sel], color=COLORS[c], ls=ls, marker='o',
+                        mfc='white', ms=4, label=f'{CONFIGS_HEUN[c][0]}, corrector {nc}')
+        ax.set_xscale('log')
+        ax.set_yscale('log')
+        ax.set_xlabel(r'$\Delta t$ (ms)')
+        ax.set_title(f'3 populations, {kind}, $\\sigma$ = {SIGMA:g} mV, $\\Delta v$ = {DV} mV', fontsize=9)
+        style(ax)
+    axs[0].set_ylabel('smoothed rel. L2 error\nvs. Heun reference')
+    axs[0].legend(fontsize=7, frameon=False)
+    for ext in ['png', 'pdf']:
+        fig.savefig(OUT_DIR / f'dt_convergence.{ext}', dpi=200)
+    plt.close(fig)
+    print(f'results saved in {OUT_DIR}')
+
+
 if __name__ == '__main__':
-    main()
+    main_heun() if net.MC_METHOD == 'heun' else main()

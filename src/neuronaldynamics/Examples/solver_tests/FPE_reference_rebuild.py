@@ -1,5 +1,5 @@
 """
-Rebuild of the IK network references with a converged Euler-Maruyama time step.
+Rebuild of the IK network references with a converged time step (stochastic Heun with interpolated spike times).
 
 All references of the solver tests (FPE_Izhikevich_resolution.py: 1 population, FPE_vs_IK_network.py,
 FPE_Izhikevich_3pop_improvements.py, FPE_dt_reference_check.py: 3 populations) used MC_DT = 0.01 ms. That is not
@@ -19,6 +19,9 @@ Outputs in Examples/solver_tests/FPE_reference_rebuild: ref_<case>_dt<REF_DT>_<n
 Usage (from src/neuronaldynamics):
     python Examples/solver_tests/FPE_reference_rebuild.py run [--dt REF_DT] [--n N] [--proc P] [case ...]
     python Examples/solver_tests/FPE_reference_rebuild.py analyze [--dt REF_DT] [--n N]
+    python Examples/solver_tests/FPE_reference_rebuild.py figure [--dt REF_DT] [--n N]
+        (hardest case, 3 populations, step, sigma = 1 mV: reference, 2D solver without and with FCT, two-node
+         closure with FCT -> hardest_case_rates.png/.pdf)
 """
 import os
 for _var in ['OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS']:
@@ -84,7 +87,42 @@ def models(case):
     if case == '3pop_step_1':
         for f in sorted((HERE / 'FPE_2D_fct_3pop' / 'runs').glob('*.npz')):
             out[f.stem if f.stem.startswith('1d_') else f'2D {f.stem}'] = np.load(f)['rb']
+        # convergence runs of the 2D solver without FCT (FPE_2D_convergence_3pop.py), dv = 0.1 mV
+        conv = np.load(HERE / 'FPE_2D_reference_test' / 'convergence_3pop_step_1.npz')
+        for key in conv.files:
+            du, dt = key.split('_')
+            out[f'2D dv0.1_{du}_{dt}_none'] = conv[key]
     return out
+
+
+def figure(dt, n):
+    """hardest case (3 populations, step, sigma = 1 mV): rates of the reference and of the models"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    case = '3pop_step_1'
+    ref = np.load(ref_file(case, dt, n))['rb']
+    m = models(case)
+    curves = [(f'network, Heun, $10^5$ (reference)', ref, dict(color='#3d3c39', lw=1.8)),
+              ('2D, $\\Delta u$ = 2 pA, no FCT', m['2D du=2 dt=0.01'], dict(color='#d6612a', lw=1.1)),
+              ('2D, $\\Delta u$ = 1 pA, FCT', m['2D dv0.1_du1_dt0.01_fct'], dict(color='#2a9d6b', lw=1.1)),
+              ('1D two-node, FCT', m['1D two-node, FCT'], dict(color='#2a78d6', lw=1.1, ls='--'))]
+    edges = np.arange(0, net.T + 1e-9, net.RATE_BIN_MS)
+    tb = 0.5 * (edges[1:] + edges[:-1])
+    fig, axs = plt.subplots(3, 1, figsize=(9, 6.2), sharex=True, constrained_layout=True)
+    for j, ax in enumerate(axs):
+        for label, rb, style in curves:
+            ax.plot(tb, imp.smooth(rb[j]), label=label, **style)
+        ax.axvspan(0, net.T_ON, color='#f2efe8', zorder=0)
+        ax.set_ylabel(f'{net.POP_NAMES["3pop"][j]}\nrate (Hz)')
+        ax.grid(lw=0.4, color='#e0dfdb')
+        ax.spines[['top', 'right']].set_visible(False)
+    axs[0].legend(fontsize=7, frameon=False, ncol=2)
+    axs[-1].set_xlabel('t (ms)')
+    for ext in ['png', 'pdf']:
+        fig.savefig(OUT_DIR / f'hardest_case_rates.{ext}', dpi=200)
+    plt.close(fig)
+    print('saved', OUT_DIR / 'hardest_case_rates.png')
 
 
 def analyze(dt, n):
@@ -138,4 +176,7 @@ if __name__ == '__main__':
             for _ in pool.imap_unordered(run, tasks):
                 pass
         print(f'total wall time {time.perf_counter() - t_start:.0f} s', flush=True)
-    analyze(dt, n)
+    if mode == 'figure':
+        figure(dt, n)
+    else:
+        analyze(dt, n)

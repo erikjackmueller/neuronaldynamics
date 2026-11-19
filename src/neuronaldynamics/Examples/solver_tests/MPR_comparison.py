@@ -14,11 +14,11 @@ the reference (best case for the model).
 
 Cases (references from the other tests, same networks and seeds):
     1 population, sigma = 2 mV, step input (FPE_Izhikevich_resolution.py: RS default, high rate, fast adaptation),
-      reference: Monte Carlo with 100k neurons
+      reference: Monte Carlo with 100k neurons (net.MC_METHOD, default stochastic Heun)
     3 populations with feedback, sigma = 3.16 and 1 mV, step and 20 Hz sine (FPE_Izhikevich_3pop_improvements.py),
-      reference: IK network with 100k neurons per population (one Delta for all populations)
+      reference: IK network with 100k neurons per population (net.MC_METHOD; one Delta for all populations)
 
-Outputs in Examples/solver_tests/MPR_comparison: mpr_rates_<case>.png, mpr_table.csv
+Outputs in Examples/solver_tests/MPR_comparison_heun (Euler references: MPR_comparison): mpr_rates_<case>.png, mpr_table.csv
 
 Usage (from src/neuronaldynamics):  python Examples/solver_tests/MPR_comparison.py
 """
@@ -42,7 +42,7 @@ matplotlib.use('Agg')
 warnings.filterwarnings('ignore')
 
 HERE = Path(__file__).resolve().parent
-OUT_DIR = HERE / 'MPR_comparison'
+OUT_DIR = HERE / f'MPR_comparison{net.method_suffix()}'
 OUT_DIR.mkdir(exist_ok=True)
 DT = 0.005                                     # ms (Heun)
 DELTAS = np.logspace(-1, 2.5, 36)              # pA, fit range of the Lorentzian half width
@@ -109,9 +109,9 @@ def main():
     smooth_l2 = lambda x, ref: imp.measures(x, ref)['rel_l2_smooth']
 
     # 1 population (resolution test, sigma = 2 mV, unsmoothed error as in that test)
-    d = np.load(HERE / 'FPE_Izhikevich_resolution' / 'resolution_rates.npz')
+    d = np.load(HERE / f'FPE_Izhikevich_resolution{net.method_suffix()}' / 'resolution_rates.npz')
     fpe_err = {}
-    with open(HERE / 'FPE_Izhikevich_resolution' / 'resolution_table.csv') as f:
+    with open(HERE / f'FPE_Izhikevich_resolution{net.method_suffix()}' / 'resolution_table.csv') as f:
         for row in csv.DictReader(f):
             if row['model'] != 'MC' and row['dv'] == '0.1' and row['dt'] == '0.05':
                 fpe_err[(row['regime'], row['model'])] = float(row['err_ref'])
@@ -136,9 +136,9 @@ def main():
         plt.close(fig)
 
     # 3 populations (improvements test, smoothed error)
-    d = np.load(HERE / 'FPE_Izhikevich_3pop_improvements' / 'improvements_rates.npz')
+    d = np.load(HERE / f'FPE_Izhikevich_3pop_improvements{net.method_suffix()}' / 'improvements_rates.npz')
     fpe = {}
-    with open(HERE / 'FPE_Izhikevich_3pop_improvements' / 'improvements_table.csv') as f:
+    with open(HERE / f'FPE_Izhikevich_3pop_improvements{net.method_suffix()}' / 'improvements_table.csv') as f:
         for row in csv.DictReader(f):
             fpe[(row['input'], float(row['sigma']), row['model'], row['n'])] = float(row['rel_l2_smooth'])
     pars = net.neuron_parameters('3pop')
